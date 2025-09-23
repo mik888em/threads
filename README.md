@@ -24,11 +24,24 @@ export PYTHONPATH=src
 - `THREADS_STATE_FILE` — путь к файлу состояния.
 - `THREADS_METRICS_TTL_MIN` — TTL метрик в минутах.
 
+Приложение не читает `.env` автоматически — переменные должны попасть в окружение перед запуском. В POSIX-оболочках можно сделать так:
+
+```bash
+set -a
+source .env
+set +a
+python -m threads_metrics.main run
+```
+
+На Windows можно воспользоваться `python-dotenv` (`python -m dotenv run -- python -m threads_metrics.main run`) либо задать переменные вручную через `set KEY=VALUE` перед запуском.
+
 ## Запуск
 
 ```bash
 python -m threads_metrics.main run
 ```
+
+Перед выполнением убедитесь, что переменные окружения загружены согласно разделу «Конфигурация».
 
 Команда запуска организует асинхронный сбор постов из Threads по токенам с листа `accounts_threads`,
 агрегирует метрики и записывает их на лист `Data_Po_kagdomy_posty`. Прогресс обработки хранится в
