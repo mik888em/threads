@@ -30,4 +30,4 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run metrics collection
-        run: python -m threads_metrics.main --heartbeat
+        run: python -m threads_metrics.main run
