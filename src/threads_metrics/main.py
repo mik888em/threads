@@ -20,23 +20,26 @@ HEARTBEAT_INTERVAL = 30
 TIMEOUT_SECONDS = 35 * 60
 
 
+class ContextJsonFormatter(logging.Formatter):
+    """Форматтер, добавляющий пустой контекст при необходимости."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        if not hasattr(record, "context"):
+            record.context = json.dumps({})
+        return super().format(record)
+
+
 def setup_logging() -> None:
     """Настраивает вывод логов в формате JSON."""
 
-    previous_factory = logging.getLogRecordFactory()
-
-    def record_factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
-        record = previous_factory(*args, **kwargs)
-        if not hasattr(record, "context"):
-            record.context = json.dumps({})
-        return record
-
-    logging.setLogRecordFactory(record_factory)
-    logging.basicConfig(
-        level=logging.INFO,
-        format='{"ts":"%(asctime)sZ","level":"%(levelname)s","msg":"%(message)s","context":%(context)s}',
-        datefmt="%Y-%m-%dT%H:%M:%S",
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        ContextJsonFormatter(
+            fmt='{"ts":"%(asctime)sZ","level":"%(levelname)s","msg":"%(message)s","context":%(context)s}',
+            datefmt="%Y-%m-%dT%H:%M:%S",
+        )
     )
+    logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
