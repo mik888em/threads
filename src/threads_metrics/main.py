@@ -1,0 +1,214 @@
+"""Точка входа приложения для сбора метрик Threads."""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import logging
+import signal
+from contextlib import asynccontextmanager
+from typing import Any, Dict, Iterable, List
+
+from .config import Config, ConfigError
+from .google_sheets import AccountToken, GoogleSheetsClient
+from .state_store import StateStore
+from .threads_client import ThreadsClient
+
+HEARTBEAT_INTERVAL = 30
+TIMEOUT_SECONDS = 35 * 60
+
+
+def setup_logging() -> None:
+    """Настраивает вывод логов в формате JSON."""
+
+    class _ContextFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            if not hasattr(record, "context"):
+                record.context = json.dumps({})
+            return True
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format='{"ts":"%(asctime)sZ","level":"%(levelname)s","msg":"%(message)s","context":%(context)s}',
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    )
+    logging.getLogger().addFilter(_ContextFilter())
+
+
+def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
+    """Разбирает аргументы командной строки."""
+
+    parser = argparse.ArgumentParser(description="Сборщик метрик Threads")
+    parser.add_argument("run", nargs="?", default="run", help="Команда запуска (по умолчанию run)")
+    return parser.parse_args(argv)
+
+
+@asynccontextmanager
+async def app_dependencies() -> Any:
+    """Создаёт и освобождает ресурсы приложения."""
+
+    config = Config.from_env()
+    state_store = StateStore(config.state_file)
+    client = ThreadsClient(
+        base_url=config.threads_api_base_url,
+        timeout=config.request_timeout,
+        concurrency_limit=config.concurrency_limit,
+    )
+    sheets = GoogleSheetsClient(
+        table_id=config.google_table_id,
+        service_account_info=config.service_account_info,
+        state_store=state_store,
+    )
+
+    try:
+        yield {
+            "config": config,
+            "state_store": state_store,
+            "threads_client": client,
+            "sheets_client": sheets,
+        }
+    finally:
+        await client.close()
+
+
+async def run_service() -> None:
+    """Основной сценарий работы сервиса."""
+
+    async with app_dependencies() as deps:
+        config: Config = deps["config"]
+        sheets: GoogleSheetsClient = deps["sheets_client"]
+        threads_client: ThreadsClient = deps["threads_client"]
+
+        if not sheets.should_refresh_metrics(ttl_minutes=config.metrics_ttl_minutes):
+            logging.info("Метрики актуальны, обновление не требуется", extra={"context": json.dumps({})})
+            return
+
+        tokens = sheets.read_account_tokens()
+        logging.info("Найдено аккаунтов: %d", len(tokens), extra={"context": json.dumps({})})
+
+        posts = await collect_posts(tokens, threads_client, sheets)
+        metrics = aggregate_posts(posts)
+        sheets.write_posts_metrics(metrics)
+        logging.info("Метрики обновлены", extra={"context": json.dumps({"posts": len(posts)})})
+
+
+async def collect_posts(
+    tokens: List[AccountToken],
+    client: ThreadsClient,
+    sheets: GoogleSheetsClient,
+) -> List[Dict[str, Any]]:
+    """Собирает посты для всех аккаунтов."""
+
+    async def _collect_for_account(token: AccountToken) -> List[Dict[str, Any]]:
+        cursor = sheets.get_last_processed_cursor(token.account_name)
+        result = await client.fetch_posts(token.token, after=cursor)
+        posts_data = []
+        for post in result.posts:
+            post_data = post.data | {"permalink": post.permalink, "account_name": token.account_name}
+            posts_data.append(post_data)
+        if result.next_cursor:
+            sheets.set_last_processed_cursor(token.account_name, result.next_cursor)
+        return posts_data
+
+    semaphore = asyncio.Semaphore(client.concurrency_limit)
+
+    async def _bounded(task: AccountToken) -> List[Dict[str, Any]]:
+        async with semaphore:
+            return await _collect_for_account(task)
+
+    tasks = [asyncio.create_task(_bounded(token)) for token in tokens]
+    results: List[List[Dict[str, Any]]] = await asyncio.gather(*tasks, return_exceptions=False)
+    flat: List[Dict[str, Any]] = [item for sublist in results for item in sublist]
+    return flat
+
+
+def aggregate_posts(posts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Агрегирует метрики по постам."""
+
+    aggregated: List[Dict[str, Any]] = []
+    for post in posts:
+        aggregated.append(
+            {
+                "account_name": post.get("account_name"),
+                "post_id": post.get("id"),
+                "permalink": post.get("permalink"),
+                "text": post.get("text"),
+                "like_count": post.get("like_count", 0),
+                "repost_count": post.get("repost_count", 0),
+                "reply_count": post.get("reply_count", 0),
+            }
+        )
+    return aggregated
+
+
+async def heartbeat() -> None:
+    """Периодически пишет heartbeat-логи."""
+
+    while True:
+        await asyncio.sleep(HEARTBEAT_INTERVAL)
+        logging.info("heartbeat", extra={"context": json.dumps({})})
+
+
+async def main_async() -> None:
+    """Запускает сервис с таймаутом и обработкой сигналов."""
+
+    stop_event = asyncio.Event()
+
+    def _handle_signal(*_: Any) -> None:
+        stop_event.set()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, _handle_signal)
+
+    heartbeat_task = asyncio.create_task(heartbeat())
+    service_task = asyncio.create_task(run_service())
+    timeout_task = asyncio.create_task(asyncio.sleep(TIMEOUT_SECONDS))
+    stop_task = asyncio.create_task(stop_event.wait())
+
+    done, pending = await asyncio.wait(
+        {service_task, timeout_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
+    )
+
+    if timeout_task in done and not service_task.done():
+        logging.warning("Таймаут работы сервиса", extra={"context": json.dumps({})})
+        service_task.cancel()
+    if stop_task in done and not service_task.done():
+        logging.info("Получен сигнал остановки", extra={"context": json.dumps({})})
+        service_task.cancel()
+
+    try:
+        await service_task
+    except asyncio.CancelledError:
+        logging.info("Сервис остановлен до завершения", extra={"context": json.dumps({})})
+
+    for task in pending:
+        task.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
+    timeout_task.cancel()
+    stop_task.cancel()
+
+    heartbeat_task.cancel()
+    try:
+        await heartbeat_task
+    except asyncio.CancelledError:
+        pass
+
+
+def main(argv: Iterable[str] | None = None) -> None:
+    """CLI-обёртка над асинхронным запуском."""
+
+    setup_logging()
+    args = parse_args(argv)
+    if args.run != "run":
+        raise ConfigError("Поддерживается только команда run")
+
+    try:
+        asyncio.run(main_async())
+    except ConfigError as exc:
+        logging.error("Ошибка конфигурации: %s", exc, extra={"context": json.dumps({})})
+        raise
+
+
+if __name__ == "__main__":
+    main()
