@@ -56,11 +56,22 @@ class GoogleSheetsClient:
         records = sheet.get_all_records()
         tokens: List[AccountToken] = []
         for row in records:
-            token = row.get("token") or row.get("access_token")
-            account = row.get("account") or row.get("name")
+            normalized_row = {
+                "_".join(str(key).strip().lower().split()): value for key, value in row.items()
+            }
+            token = self._get_first_present(normalized_row, ("token", "access_token", "bearer_token"))
+            account = self._get_first_present(normalized_row, ("account", "name", "nickname"))
             if token and account:
                 tokens.append(AccountToken(account_name=str(account), token=str(token)))
         return tokens
+
+    @staticmethod
+    def _get_first_present(row: Dict[str, Any], keys: Iterable[str]) -> Optional[Any]:
+        for key in keys:
+            value = row.get(key)
+            if value:
+                return value
+        return None
 
     def write_posts_metrics(
         self,
