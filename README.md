@@ -1,61 +1,79 @@
-# Threads Automation
+# Threads Automation / Автоматизация Threads
 
-## Назначение проекта
-Скрипт автоматизирует публикацию контента в Threads на основе данных из Google Sheets. Решение синхронизирует таблицу с очередью постов и автоматически отправляет их в Threads API, отмечая успешные публикации в таблице. Такой подход позволяет единообразно планировать кампании и избегать ручного копирования контента.
+## Overview / Обзор
+This project contains a Python script that publishes content to Threads based on rows stored in Google Sheets. It keeps the
+spreadsheet and Threads API in sync, queues posts, publishes them automatically, and writes back the execution results so that
+campaigns can be planned without manual copy-paste. Скрипт автоматизирует публикацию постов в Threads на основе данных из
+Google Sheets, синхронизируя очередь постов и статусы их обработки.
 
-## Архитектура решения
-- **Python-скрипт** — точка входа, которая подтягивает данные из Google Sheets, формирует payload и отправляет посты в Threads API. Внутри выделены слои работы с HTTP, бизнес-логика и хранилище.
-- **Google Sheets** — источник контента и статусов. Через Google Apps Script таблица предоставляет REST‑эндпоинт для чтения/обновления строк.
-- **Threads API** — целевая платформа для публикаций. Скрипт обращается к официальному API Meta, обрабатывает ответы и обновляет таблицу.
+## Architecture / Архитектура решения
+- **Python script / Python-скрипт** – entry point that fetches rows from Google Sheets, builds the payload, and posts updates to
+  the Threads API. Внутри выделены слои работы с HTTP, бизнес-логикой и хранилищем.
+- **Google Sheets** – serves as the source of truth for content and statuses. Таблица предоставляет REST‑эндпоинт (через Google
+  Apps Script) для чтения и обновления строк.
+- **Threads API** – official Meta endpoint that receives posts. Скрипт обрабатывает ответы API и обновляет таблицу.
 
-## Требования
+## Requirements / Требования
 - Python 3.11+
-- Операционная система с доступом к сети Интернет и возможностью устанавливать Python-зависимости
+- Operating system capable of installing Python dependencies and with outbound Internet access. Операционная система должна
+  позволять устанавливать зависимости и иметь доступ к сети Интернет.
 
-### Зависимости
-Список фиксированных зависимостей приведён в файле [`requirements.txt`](requirements.txt).
+### Dependencies / Зависимости
+Pinned dependencies are listed in [`requirements.txt`](requirements.txt). Установить их можно командой:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Переменные окружения и секреты
-| Имя переменной | Описание |
-| --- | --- |
-| `ID_GOOGLE_TABLE` | Идентификатор Google Sheets c очередью публикаций. |
-| `URL_GAS_RAZVERTIVANIA` | URL развёрнутого Google Apps Script Web App, предоставляющего REST-интерфейс к таблице. |
-| `GOOGLE_SERVICE_ACCOUNT_JSON` | JSON с учётными данными сервисного аккаунта Google (значение передаётся как строка или путь к файлу). |
-| `THREADS_ACCESS_TOKEN` | Токен доступа к Threads API. |
-| `LOG_LEVEL` | Уровень логирования (`info`, `debug`, `warning`, `error`). |
+## Environment variables and secrets / Переменные окружения и секреты
+| Variable | Description (EN) | Описание (RU) |
+| --- | --- | --- |
+| `ID_GOOGLE_TABLE` | Identifier of the Google Sheets document that stores the publication queue. | Идентификатор Google Sheets c очередью публикаций. |
+| `URL_GAS_RAZVERTIVANIA` | URL of the deployed Google Apps Script Web App exposing the REST interface. | URL развёрнутого Google Apps Script Web App с REST-интерфейсом к таблице. |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | JSON credentials of the Google service account (as a string or path). | JSON с учётными данными сервисного аккаунта Google (строка или путь к файлу). |
+| `THREADS_ACCESS_TOKEN` | Threads API access token. | Токен доступа к Threads API. |
+| `LOG_LEVEL` | Logging level (`info`, `debug`, `warning`, `error`). | Уровень логирования (`info`, `debug`, `warning`, `error`). |
 
-Перед запуском создайте файл `.env` (или настройте секреты в CI/CD) и заполните перечисленные переменные.
+Create a `.env` file locally or configure CI/CD secrets before running the script. Перед запуском создайте `.env` или
+настройте секреты в CI/CD.
 
-## Запуск
+## Running the script / Запуск
 
-### Локально
-1. Склонируйте репозиторий и перейдите в директорию проекта.
-2. Установите зависимости: `pip install -r requirements.txt`.
-3. Создайте `.env` или экспортируйте переменные окружения.
-4. Выполните команду запуска скрипта, например:
+### Local run / Локально
+1. Clone the repository and enter the project directory. Склонируйте репозиторий и перейдите в директорию проекта.
+2. Install dependencies: `pip install -r requirements.txt`.
+3. Export environment variables or create a `.env`. Создайте `.env` или экспортируйте переменные окружения.
+4. Run the entry point, for example:
    ```bash
    python src/main.py
    ```
-   Скрипт загрузит новые записи, опубликует их в Threads и обновит статусы в таблице.
+   The script loads new rows, publishes them to Threads, and updates statuses. Скрипт загрузит новые записи, опубликует их и
+   обновит статусы в таблице.
 
-### Через GitHub Actions
-- Создайте workflow с шагами `actions/setup-python`, `pip install -r requirements.txt` и запуском скрипта.
-- Секреты (`ID_GOOGLE_TABLE`, `URL_GAS_RAZVERTIVANIA`, `GOOGLE_SERVICE_ACCOUNT_JSON`, `THREADS_ACCESS_TOKEN`) добавьте в GitHub Secrets и считывайте через `env`.
-- Для регулярного запуска используйте `on.schedule` (cron). Рекомендуем расписание `*/15 * * * *` для проверки новых публикаций каждые 15 минут без излишней нагрузки.
+### GitHub Actions
+- Configure a workflow with `actions/setup-python`, dependency installation, and the script execution step. Создайте workflow с
+  установкой Python и запуском скрипта.
+- Add the secrets (`ID_GOOGLE_TABLE`, `URL_GAS_RAZVERTIVANIA`, `GOOGLE_SERVICE_ACCOUNT_JSON`, `THREADS_ACCESS_TOKEN`) to GitHub
+  Secrets and expose them through `env`. Секреты добавьте в GitHub Secrets и пробрасывайте через `env`.
+- Use `on.schedule` (cron) for periodic runs. Рекомендуем cron `*/15 * * * *`, чтобы проверять новые публикации каждые 15 минут
+  без излишней нагрузки.
 
-## Логирование и наблюдаемость
-- Логи выводятся в формате JSON со стандартными полями `ts`, `level`, `msg`, `context`.
-- Устанавливайте `LOG_LEVEL` в `info` для штатной работы и `debug` при диагностике.
-- Для heartbeat предусмотрен лог на уровне `info` при каждом успешном запуске с количеством обработанных постов.
-- Ошибки публикуются в `stderr`, при сбое повторные попытки делаются с экспоненциальным бэкоффом.
+## Logging and observability / Логирование и наблюдаемость
+- Logs are emitted as JSON with `ts`, `level`, `msg`, and `context` fields. Логи выводятся в формате JSON со стандартными
+  полями.
+- Set `LOG_LEVEL` to `info` for normal runs and `debug` when investigating issues. Используйте `info` для штатной работы и
+  `debug` для диагностики.
+- Each successful run logs a heartbeat with the processed items count. Для heartbeat предусмотрен лог на уровне `info` с
+  количеством обработанных постов.
+- Errors go to `stderr`; retries are handled with exponential backoff. Ошибки публикуются в `stderr`, при сбоях выполняются
+  повторы с экспоненциальным бэкоффом.
 
-## Ограничения и рекомендации по частоте запусков
-- Threads API имеет квоты на число публикаций и запросов в минуту. Следите за лимитами Meta и не превышайте 60 запросов/минуту.
-- Google Apps Script ограничен по времени выполнения (6 минут для бесплатного тарифа) и числу обращений в сутки.
-- При большом объёме контента задавайте паузу между публикациями (например, 5–10 секунд) и не запускайте cron чаще, чем раз в 5 минут, чтобы избежать превышения квот.
-- Храните токены в секретах и регулярно ротируйте доступы.
-
+## Rate limits and recommendations / Ограничения и рекомендации по частоте запусков
+- Threads API enforces limits on requests and publications per minute—stay below 60 requests/min. Threads API имеет квоты на
+  число публикаций и запросов в минуту.
+- Google Apps Script is limited by execution time (6 minutes on the free tier) and daily invocations. Google Apps Script
+  ограничен по времени выполнения и количеству обращений.
+- For large queues, add delays between posts (5–10 seconds) and avoid cron schedules more frequent than every 5 minutes to stay
+  within quotas. При большом объёме контента задавайте паузу между публикациями (5–10 секунд) и не запускайте cron чаще, чем раз
+  в 5 минут.
+- Store tokens securely and rotate credentials regularly. Храните токены в секретах и регулярно ротируйте доступы.
