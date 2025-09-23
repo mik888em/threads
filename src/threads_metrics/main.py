@@ -147,7 +147,26 @@ async def collect_insights(
 ) -> Dict[str, Dict[str, int]]:
     """Параллельно собирает Insights для постов."""
 
-    tasks: List[asyncio.Task[tuple[str, Dict[str, int], dt.datetime]]] = []
+    async def _fetch(
+        post_id: str, token: str, account_name: str
+    ) -> tuple[str, Dict[str, int], dt.datetime] | None:
+        try:
+            insights = await client.fetch_post_insights(token, post_id)
+        except Exception:
+            logging.exception(
+                "Не удалось получить инсайты для поста",
+                extra={
+                    "context": json.dumps(
+                        {"post_id": post_id, "account_name": account_name}
+                    )
+                },
+            )
+            return None
+
+        fetched_at = dt.datetime.now(TIMEZONE)
+        return post_id, insights, fetched_at
+
+    tasks: List[asyncio.Task[tuple[str, Dict[str, int], dt.datetime] | None]] = []
     for post in posts:
         raw_post_id = post.get("id")
         account_name = post.get("account_name")
@@ -160,12 +179,7 @@ async def collect_insights(
         if not state_store.should_refresh_post_metrics(post_id, ttl_minutes):
             continue
 
-        async def _fetch(post_id: str, token: str) -> tuple[str, Dict[str, int], dt.datetime]:
-            insights = await client.fetch_post_insights(token, post_id)
-            fetched_at = dt.datetime.now(TIMEZONE)
-            return post_id, insights, fetched_at
-
-        tasks.append(asyncio.create_task(_fetch(post_id, token)))
+        tasks.append(asyncio.create_task(_fetch(post_id, token, str(account_name))))
 
     insights_map: Dict[str, Dict[str, int]] = {}
     if not tasks:
@@ -173,11 +187,15 @@ async def collect_insights(
 
     results = await asyncio.gather(*tasks)
     updates: Dict[str, dt.datetime] = {}
-    for post_id, insights, fetched_at in results:
+    for result in results:
+        if result is None:
+            continue
+        post_id, insights, fetched_at = result
         insights_map[post_id] = insights
         updates[post_id] = fetched_at
 
-    state_store.update_post_metrics_many(updates)
+    if updates:
+        state_store.update_post_metrics_many(updates)
     return insights_map
 
 async def heartbeat() -> None:
