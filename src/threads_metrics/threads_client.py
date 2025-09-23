@@ -128,8 +128,21 @@ class ThreadsClient:
 
     @staticmethod
     def _sanitize_permalink(permalink: str) -> str:
+        prefixes = (
+            "https://www.threads.com/",
+            "https://www.threads.net/",
+        )
+
+        for prefix in prefixes:
+            if permalink.startswith(prefix):
+                permalink = permalink[len(prefix) :]
+                if not permalink.startswith("/"):
+                    permalink = f"/{permalink}"
+                break
+
         if "?" in permalink:
-            return permalink.split("?", maxsplit=1)[0]
+            permalink = permalink.split("?", maxsplit=1)[0]
+
         return permalink
 
     @staticmethod
