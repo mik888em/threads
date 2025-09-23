@@ -1,0 +1,33 @@
+name: Threads Metrics
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: threads-metrics
+  cancel-in-progress: true
+
+jobs:
+  run-metrics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      THREADS_METRICS_API_TOKEN: ${{ secrets.THREADS_METRICS_API_TOKEN }}
+      THREADS_METRICS_DB_URL: ${{ secrets.THREADS_METRICS_DB_URL }}
+      THREADS_METRICS_HEARTBEAT_INTERVAL: ${{ secrets.THREADS_METRICS_HEARTBEAT_INTERVAL }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run metrics collection
+        run: python -m threads_metrics.main --heartbeat
