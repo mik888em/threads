@@ -1,0 +1,33 @@
+name: automerge-codex
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  statuses: read
+
+jobs:
+  label-and-merge:
+    # Автоматически ставим метку, если ветка начинается с "codex/"
+    if: startsWith(github.event.pull_request.head.ref, 'codex/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add "automerge" label for codex branches
+        uses: actions-ecosystem/action-add-labels@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          labels: automerge
+
+      - name: Automerge when ready
+        uses: pascalgn/automerge-action@v0.16.3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MERGE_METHOD: squash
+          MERGE_LABELS: automerge
+          MERGE_COMMIT_MESSAGE: pull-request-title
+          MERGE_DELETE_BRANCH: true
+          MERGE_RETRY_SLEEP: 60000   # 60 секунд между попытками
+          MERGE_RETRY_LIMIT: 120     # максимум ~2 часа ожидания
