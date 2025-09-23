@@ -23,18 +23,20 @@ TIMEOUT_SECONDS = 35 * 60
 def setup_logging() -> None:
     """Настраивает вывод логов в формате JSON."""
 
-    class _ContextFilter(logging.Filter):
-        def filter(self, record: logging.LogRecord) -> bool:
-            if not hasattr(record, "context"):
-                record.context = json.dumps({})
-            return True
+    previous_factory = logging.getLogRecordFactory()
 
+    def record_factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
+        record = previous_factory(*args, **kwargs)
+        if not hasattr(record, "context"):
+            record.context = json.dumps({})
+        return record
+
+    logging.setLogRecordFactory(record_factory)
     logging.basicConfig(
         level=logging.INFO,
         format='{"ts":"%(asctime)sZ","level":"%(levelname)s","msg":"%(message)s","context":%(context)s}',
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
-    logging.getLogger().addFilter(_ContextFilter())
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
