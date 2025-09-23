@@ -1,0 +1,25 @@
+reviews:
+  auto_review:
+    enabled: true
+  # Не блокировать мердж никогда
+  request_changes:
+    mode: off
+
+  # Грубо, но эффективно: игнорим мелочь и «шум»
+  min_lines_changed: 10   # меньше 10 изменённых строк — не тратим время
+  path_filters:
+    - "!**/*.md"
+    - "!**/*.csv"
+    - "!**/*.png"
+    - "!**/*.jpg"
+    - "!**/.github/**"     # не рецензировать сами workflow-файлы
+    - "**/src/**"          # рецензировать только код в src
+
+  # Тон диалога и объём
+  summary:
+    enabled: true
+  line_by_line:
+    enabled: true
+  # Никаких «stop the merge» по «предмердж-чекам»
+  pre_merge_checks:
+    enabled: false
