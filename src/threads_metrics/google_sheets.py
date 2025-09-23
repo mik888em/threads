@@ -109,7 +109,9 @@ class GoogleSheetsClient:
 
     def _merge_existing(self, existing_df: pd.DataFrame, new_df: pd.DataFrame) -> pd.DataFrame:
         timestamp_column = "updated_at"
-        key_columns = [col for col in new_df.columns if col not in {timestamp_column}]
+        key_columns = [col for col in ("account_name", "post_id") if col in new_df.columns]
+        if not key_columns:
+            key_columns = [col for col in new_df.columns if col not in {timestamp_column}]
         if not key_columns:
             return new_df
 

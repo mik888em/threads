@@ -3,15 +3,17 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import datetime as dt
 import json
 import logging
 import signal
 from contextlib import asynccontextmanager
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Mapping
 
+from .aggregation import aggregate_posts
 from .config import Config, ConfigError
 from .google_sheets import AccountToken, GoogleSheetsClient
-from .state_store import StateStore
+from .state_store import StateStore, TIMEZONE
 from .threads_client import ThreadsClient
 
 HEARTBEAT_INTERVAL = 30
@@ -78,6 +80,7 @@ async def run_service() -> None:
         config: Config = deps["config"]
         sheets: GoogleSheetsClient = deps["sheets_client"]
         threads_client: ThreadsClient = deps["threads_client"]
+        state_store: StateStore = deps["state_store"]
 
         if not sheets.should_refresh_metrics(ttl_minutes=config.metrics_ttl_minutes):
             logging.info("Метрики актуальны, обновление не требуется", extra={"context": json.dumps({})})
@@ -87,7 +90,15 @@ async def run_service() -> None:
         logging.info("Найдено аккаунтов: %d", len(tokens), extra={"context": json.dumps({})})
 
         posts = await collect_posts(tokens, threads_client, sheets)
-        metrics = aggregate_posts(posts)
+        token_map = {token.account_name: token.token for token in tokens}
+        insights = await collect_insights(
+            posts,
+            token_map,
+            threads_client,
+            state_store,
+            ttl_minutes=config.metrics_ttl_minutes,
+        )
+        metrics = aggregate_posts(posts, insights)
         sheets.write_posts_metrics(metrics)
         logging.info("Метрики обновлены", extra={"context": json.dumps({"posts": len(posts)})})
 
@@ -122,24 +133,47 @@ async def collect_posts(
     return flat
 
 
-def aggregate_posts(posts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Агрегирует метрики по постам."""
+async def collect_insights(
+    posts: List[Dict[str, Any]],
+    tokens: Mapping[str, str],
+    client: ThreadsClient,
+    state_store: StateStore,
+    ttl_minutes: int,
+) -> Dict[str, Dict[str, int]]:
+    """Параллельно собирает Insights для постов."""
 
-    aggregated: List[Dict[str, Any]] = []
+    tasks: List[asyncio.Task[tuple[str, Dict[str, int], dt.datetime]]] = []
     for post in posts:
-        aggregated.append(
-            {
-                "account_name": post.get("account_name"),
-                "post_id": post.get("id"),
-                "permalink": post.get("permalink"),
-                "text": post.get("text"),
-                "like_count": post.get("like_count", 0),
-                "repost_count": post.get("repost_count", 0),
-                "reply_count": post.get("reply_count", 0),
-            }
-        )
-    return aggregated
+        raw_post_id = post.get("id")
+        account_name = post.get("account_name")
+        if not raw_post_id or not account_name:
+            continue
+        post_id = str(raw_post_id)
+        token = tokens.get(str(account_name))
+        if not token:
+            continue
+        if not state_store.should_refresh_post_metrics(post_id, ttl_minutes):
+            continue
 
+        async def _fetch(post_id: str, token: str) -> tuple[str, Dict[str, int], dt.datetime]:
+            insights = await client.fetch_post_insights(token, post_id)
+            fetched_at = dt.datetime.now(TIMEZONE)
+            return post_id, insights, fetched_at
+
+        tasks.append(asyncio.create_task(_fetch(post_id, token)))
+
+    insights_map: Dict[str, Dict[str, int]] = {}
+    if not tasks:
+        return insights_map
+
+    results = await asyncio.gather(*tasks)
+    updates: Dict[str, dt.datetime] = {}
+    for post_id, insights, fetched_at in results:
+        insights_map[post_id] = insights
+        updates[post_id] = fetched_at
+
+    state_store.update_post_metrics_many(updates)
+    return insights_map
 
 async def heartbeat() -> None:
     """Периодически пишет heartbeat-логи."""

@@ -126,6 +126,36 @@ class ThreadsClient:
                 return response.json()
         raise ThreadsAPIError("Не удалось получить ответ от Threads API")
 
+    async def fetch_post_insights(self, access_token: str, post_id: str) -> Dict[str, int]:
+        """Возвращает метрики Insights для указанного поста."""
+
+        metrics_map = {
+            "view_count": "views",
+            "like_count": "likes",
+            "reply_count": "replies",
+            "repost_count": "reposts",
+            "quote_count": "quotes",
+            "share_count": "shares",
+        }
+        params = {"metric": ",".join(metrics_map.keys())}
+        async with self._semaphore:
+            data = await self._request(f"/{post_id}/insights", access_token=access_token, params=params)
+
+        insights: Dict[str, int] = {value: 0 for value in metrics_map.values()}
+        for item in data.get("data", []):
+            metric_name = metrics_map.get(item.get("name", ""))
+            if not metric_name:
+                continue
+            values = item.get("values") or []
+            if not values:
+                continue
+            value = values[0].get("value")
+            try:
+                insights[metric_name] = int(value)
+            except (TypeError, ValueError):
+                continue
+        return insights
+
     @staticmethod
     def _sanitize_permalink(permalink: str) -> str:
         prefixes = (
