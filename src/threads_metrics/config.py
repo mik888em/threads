@@ -73,7 +73,7 @@ class Config:
             env_map.get("THREADS_METRICS_TTL_MIN", "60"), "THREADS_METRICS_TTL_MIN"
         )
         run_timeout_minutes = cls._parse_int(
-            env_map.get("THREADS_RUN_TIMEOUT_MIN", "35"), "THREADS_RUN_TIMEOUT_MIN"
+            env_map.get("THREADS_RUN_TIMEOUT_MIN", "100"), "THREADS_RUN_TIMEOUT_MIN"
         )
 
         return cls(
