@@ -17,7 +17,6 @@ from .state_store import StateStore, TIMEZONE
 from .threads_client import ThreadsClient
 
 HEARTBEAT_INTERVAL = 30
-TIMEOUT_SECONDS = 35 * 60
 
 
 class ContextJsonFormatter(logging.Formatter):
@@ -51,10 +50,9 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
 
 
 @asynccontextmanager
-async def app_dependencies() -> Any:
+async def app_dependencies(config: Config) -> Any:
     """Создаёт и освобождает ресурсы приложения."""
 
-    config = Config.from_env()
     state_store = StateStore(config.state_file)
     client = ThreadsClient(
         base_url=config.threads_api_base_url,
@@ -78,17 +76,17 @@ async def app_dependencies() -> Any:
         await client.close()
 
 
-async def run_service() -> None:
+async def run_service(config: Config) -> None:
     """Основной сценарий работы сервиса."""
 
-    async with app_dependencies() as deps:
-        config: Config = deps["config"]
+    async with app_dependencies(config) as deps:
+        config = deps["config"]
         sheets: GoogleSheetsClient = deps["sheets_client"]
         threads_client: ThreadsClient = deps["threads_client"]
         state_store: StateStore = deps["state_store"]
 
         lock_acquired = state_store.try_acquire_run_lock(
-            max_age=dt.timedelta(seconds=TIMEOUT_SECONDS)
+            max_age=dt.timedelta(minutes=config.run_timeout_minutes)
         )
         if not lock_acquired:
             logging.info(
@@ -226,10 +224,11 @@ async def heartbeat() -> None:
         logging.info("heartbeat", extra={"context": json.dumps({})})
 
 
-async def main_async() -> None:
+async def main_async(config: Config) -> None:
     """Запускает сервис с таймаутом и обработкой сигналов."""
 
     stop_event = asyncio.Event()
+    timeout_seconds = config.run_timeout_minutes * 60
 
     def _handle_signal(*_: Any) -> None:
         stop_event.set()
@@ -239,8 +238,8 @@ async def main_async() -> None:
         loop.add_signal_handler(sig, _handle_signal)
 
     heartbeat_task = asyncio.create_task(heartbeat())
-    service_task = asyncio.create_task(run_service())
-    timeout_task = asyncio.create_task(asyncio.sleep(TIMEOUT_SECONDS))
+    service_task = asyncio.create_task(run_service(config))
+    timeout_task = asyncio.create_task(asyncio.sleep(timeout_seconds))
     stop_task = asyncio.create_task(stop_event.wait())
 
     done, pending = await asyncio.wait(
@@ -281,10 +280,12 @@ def main(argv: Iterable[str] | None = None) -> None:
         raise ConfigError("Поддерживается только команда run")
 
     try:
-        asyncio.run(main_async())
+        config = Config.from_env()
     except ConfigError as exc:
         logging.error("Ошибка конфигурации: %s", exc, extra={"context": json.dumps({})})
         raise
+
+    asyncio.run(main_async(config))
 
 
 if __name__ == "__main__":

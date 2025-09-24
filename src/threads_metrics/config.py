@@ -25,6 +25,7 @@ class Config:
         concurrency_limit: Ограничение параллелизма для запросов.
         state_file: Путь к файлу состояния.
         metrics_ttl_minutes: Допустимая "давность" закэшированных метрик.
+        run_timeout_minutes: Таймаут выполнения сервиса в минутах.
     """
 
     google_table_id: str
@@ -35,6 +36,7 @@ class Config:
     concurrency_limit: int
     state_file: Path
     metrics_ttl_minutes: int
+    run_timeout_minutes: int
 
     @classmethod
     def from_env(cls, env: Optional[Dict[str, str]] = None) -> "Config":
@@ -67,8 +69,12 @@ class Config:
         concurrency_limit = cls._parse_int(env_map.get("THREADS_CONCURRENCY", "5"),
                                            "THREADS_CONCURRENCY")
         state_file = Path(env_map.get("THREADS_STATE_FILE", "state.json"))
-        metrics_ttl_minutes = cls._parse_int(env_map.get("THREADS_METRICS_TTL_MIN", "60"),
-                                             "THREADS_METRICS_TTL_MIN")
+        metrics_ttl_minutes = cls._parse_int(
+            env_map.get("THREADS_METRICS_TTL_MIN", "60"), "THREADS_METRICS_TTL_MIN"
+        )
+        run_timeout_minutes = cls._parse_int(
+            env_map.get("THREADS_RUN_TIMEOUT_MIN", "35"), "THREADS_RUN_TIMEOUT_MIN"
+        )
 
         return cls(
             google_table_id=google_table_id,
@@ -79,6 +85,7 @@ class Config:
             concurrency_limit=concurrency_limit,
             state_file=state_file,
             metrics_ttl_minutes=metrics_ttl_minutes,
+            run_timeout_minutes=run_timeout_minutes,
         )
 
     @staticmethod
