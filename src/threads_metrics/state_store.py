@@ -17,6 +17,7 @@ class AppState:
     cursors: Dict[str, str] = field(default_factory=dict)
     last_metrics_write: Optional[str] = None
     post_metrics_updated_at: Dict[str, str] = field(default_factory=dict)
+    run_started_at: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Optional[str]]:
         """Преобразует состояние к словарю."""
@@ -25,6 +26,7 @@ class AppState:
             "cursors": self.cursors,
             "last_metrics_write": self.last_metrics_write,
             "post_metrics_updated_at": self.post_metrics_updated_at,
+            "run_started_at": self.run_started_at,
         }
 
     @classmethod
@@ -34,10 +36,12 @@ class AppState:
         cursors = data.get("cursors") or {}
         last_metrics_write = data.get("last_metrics_write")
         post_metrics_updated_at = data.get("post_metrics_updated_at") or {}
+        run_started_at = data.get("run_started_at")
         return cls(
             cursors=dict(cursors),
             last_metrics_write=last_metrics_write,
             post_metrics_updated_at=dict(post_metrics_updated_at),
+            run_started_at=run_started_at,
         )
 
 
@@ -108,6 +112,38 @@ class StateStore:
             self._state.post_metrics_updated_at[post_id] = moment.isoformat()
         if timestamps:
             self._save()
+
+    def try_acquire_run_lock(self, *, max_age: dt.timedelta) -> bool:
+        """Пытается установить признак активного запуска.
+
+        Args:
+            max_age: Максимальная продолжительность активности запуска,
+                после которой блокировка считается протухшей.
+
+        Returns:
+            True, если блокировку удалось установить, иначе False.
+        """
+
+        now = dt.datetime.now(TIMEZONE)
+        if self._state.run_started_at:
+            try:
+                started_at = dt.datetime.fromisoformat(self._state.run_started_at)
+            except ValueError:
+                started_at = None
+            if started_at and now - started_at < max_age:
+                return False
+
+        self._state.run_started_at = now.isoformat()
+        self._save()
+        return True
+
+    def release_run_lock(self) -> None:
+        """Сбрасывает признак активного запуска."""
+
+        if self._state.run_started_at is None:
+            return
+        self._state.run_started_at = None
+        self._save()
 
     def _load(self) -> AppState:
         if not self._path.exists():

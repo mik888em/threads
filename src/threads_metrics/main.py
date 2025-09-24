@@ -87,25 +87,45 @@ async def run_service() -> None:
         threads_client: ThreadsClient = deps["threads_client"]
         state_store: StateStore = deps["state_store"]
 
-        if not sheets.should_refresh_metrics(ttl_minutes=config.metrics_ttl_minutes):
-            logging.info("Метрики актуальны, обновление не требуется", extra={"context": json.dumps({})})
+        lock_acquired = state_store.try_acquire_run_lock(
+            max_age=dt.timedelta(seconds=TIMEOUT_SECONDS)
+        )
+        if not lock_acquired:
+            logging.info(
+                "Предыдущий запуск ещё выполняется, завершаемся",
+                extra={"context": json.dumps({})},
+            )
             return
 
-        tokens = sheets.read_account_tokens()
-        logging.info("Найдено аккаунтов: %d", len(tokens), extra={"context": json.dumps({})})
+        try:
+            if not sheets.should_refresh_metrics(ttl_minutes=config.metrics_ttl_minutes):
+                logging.info(
+                    "Метрики актуальны, обновление не требуется",
+                    extra={"context": json.dumps({})},
+                )
+                return
 
-        posts = await collect_posts(tokens, threads_client, sheets)
-        token_map = {token.account_name: token.token for token in tokens}
-        insights = await collect_insights(
-            posts,
-            token_map,
-            threads_client,
-            state_store,
-            ttl_minutes=config.metrics_ttl_minutes,
-        )
-        metrics = aggregate_posts(posts, insights)
-        sheets.write_posts_metrics(metrics)
-        logging.info("Метрики обновлены", extra={"context": json.dumps({"posts": len(posts)})})
+            tokens = sheets.read_account_tokens()
+            logging.info(
+                "Найдено аккаунтов: %d", len(tokens), extra={"context": json.dumps({})}
+            )
+
+            posts = await collect_posts(tokens, threads_client, sheets)
+            token_map = {token.account_name: token.token for token in tokens}
+            insights = await collect_insights(
+                posts,
+                token_map,
+                threads_client,
+                state_store,
+                ttl_minutes=config.metrics_ttl_minutes,
+            )
+            metrics = aggregate_posts(posts, insights)
+            sheets.write_posts_metrics(metrics)
+            logging.info(
+                "Метрики обновлены", extra={"context": json.dumps({"posts": len(posts)})}
+            )
+        finally:
+            state_store.release_run_lock()
 
 
 async def collect_posts(
