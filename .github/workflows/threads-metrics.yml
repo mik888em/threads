@@ -7,7 +7,6 @@ on:
 
 concurrency:
   group: threads-metrics
-  cancel-in-progress: true
 
 jobs:
   run-metrics:
