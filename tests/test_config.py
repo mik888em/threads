@@ -17,6 +17,20 @@ def test_config_from_env_success(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert config.google_table_id == "table"
     assert config.threads_api_base_url == "https://graph.threads.net"
+    assert config.run_timeout_minutes == 35
+
+
+def test_config_respects_run_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Проверяет чтение пользовательского таймаута работы."""
+
+    monkeypatch.setenv("ID_GOOGLE_TABLE", "table")
+    monkeypatch.setenv("URL_GAS_RAZVERTIVANIA", "https://example.com")
+    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON", "{}")
+    monkeypatch.setenv("THREADS_RUN_TIMEOUT_MIN", "120")
+
+    config = Config.from_env()
+
+    assert config.run_timeout_minutes == 120
 
 
 @pytest.mark.parametrize(
