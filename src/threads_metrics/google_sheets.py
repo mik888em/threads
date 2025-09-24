@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
+import logging
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -52,8 +54,15 @@ class GoogleSheetsClient:
             Список токенов аккаунтов.
         """
 
-        sheet = self._client.open_by_key(self._table_id).worksheet(worksheet)
-        records = sheet.get_all_records()
+        sheet = self._get_worksheet(worksheet)
+        try:
+            records = sheet.get_all_records()
+        except Exception:
+            logging.exception(
+                "Не удалось прочитать данные из Google Sheets",
+                extra={"context": json.dumps({"worksheet": worksheet})},
+            )
+            raise
         tokens: List[AccountToken] = []
         for row in records:
             normalized_row = {
@@ -87,25 +96,48 @@ class GoogleSheetsClient:
             timestamp_column: Колонка с отметкой времени обновления.
         """
 
-        sheet = self._client.open_by_key(self._table_id).worksheet(worksheet)
-        df = pd.DataFrame(rows)
-        if df.empty:
+        sheet = self._get_worksheet(worksheet)
+        rows_list = list(rows)
+        try:
+            df = pd.DataFrame(rows_list)
+            if df.empty:
+                self._state_store.update_last_metrics_write()
+                return
+            now = dt.datetime.now(TIMEZONE).isoformat()
+            df[timestamp_column] = now
+
+            existing = sheet.get_all_records()
+            existing_df = pd.DataFrame(existing)
+            if not existing_df.empty:
+                for column in df.columns:
+                    if column not in existing_df.columns:
+                        existing_df[column] = pd.NA
+                df = self._merge_existing(existing_df, df)
+
+            sheet.clear()
+            sheet.update([df.columns.tolist()] + df.fillna("").astype(str).values.tolist())
             self._state_store.update_last_metrics_write()
-            return
-        now = dt.datetime.now(TIMEZONE).isoformat()
-        df[timestamp_column] = now
+        except Exception:
+            logging.exception(
+                "Не удалось записать метрики в Google Sheets",
+                extra={
+                    "context": json.dumps(
+                        {"worksheet": worksheet, "rows": len(rows_list)}
+                    )
+                },
+            )
+            raise
 
-        existing = sheet.get_all_records()
-        existing_df = pd.DataFrame(existing)
-        if not existing_df.empty:
-            for column in df.columns:
-                if column not in existing_df.columns:
-                    existing_df[column] = pd.NA
-            df = self._merge_existing(existing_df, df)
-
-        sheet.clear()
-        sheet.update([df.columns.tolist()] + df.fillna("").astype(str).values.tolist())
-        self._state_store.update_last_metrics_write()
+    def _get_worksheet(self, worksheet: str) -> Any:
+        try:
+            spreadsheet = self._client.open_by_key(self._table_id)
+            return spreadsheet.worksheet(worksheet)
+        except Exception:
+            logging.exception(
+                "Не удалось получить лист Google Sheets",
+                extra={"context": json.dumps({"worksheet": worksheet})},
+            )
+            raise
 
     def _merge_existing(self, existing_df: pd.DataFrame, new_df: pd.DataFrame) -> pd.DataFrame:
         timestamp_column = "updated_at"
