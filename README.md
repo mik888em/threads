@@ -31,7 +31,7 @@ export PYTHONPATH=src
 - `ID_GOOGLE_TABLE` — идентификатор Google-таблицы с данными.
 - `URL_GAS_RAZVERTIVANIA` — URL развёрнутого Google Apps Script.
 - `GOOGLE_SERVICE_ACCOUNT_JSON` — JSON-ключ сервисного аккаунта Google.
-- `THREADS_API_BASE_URL` — базовый URL Threads Graph API (по умолчанию `https://graph.threads.net`).
+- `THREADS_API_BASE_URL` — базовый URL Threads Graph API (по умолчанию `https://graph.threads.net`, запросы выполняются к версии API `v1.0`).
 - `THREADS_REQUEST_TIMEOUT` — таймаут HTTP-запросов в секундах.
 - `THREADS_CONCURRENCY` — максимальное число параллельных запросов.
 - `THREADS_STATE_FILE` — путь к файлу состояния.
@@ -83,8 +83,8 @@ python -m threads_metrics.main run
 
 1. **Загрузка конфигурации.** Переменные окружения проверяются и валидируются перед запуском; при ошибке сервис завершится с понятным сообщением.
 2. **Чтение токенов и курсоров.** Для каждого аккаунта берётся сохранённый курсор пагинации, чтобы продолжить с места предыдущего запуска.
-3. **Сбор постов.** Параллельные запросы ограничены семафором, параметры `fields` приводятся к нужному набору полей, а курсор обновляется только после успешного шага.
-4. **Сбор Insights.** Для каждого поста проверяется TTL; свежие записи пропускаются, что заметно сокращает число запросов к API.
+3. **Сбор постов.** Параллельные запросы ограничены семафором, данные запрашиваются по эндпоинту `https://graph.threads.net/v1.0/me/threads?fields=id,permalink,text,media_type,media_url,like_count,repost_count,reply_count`, а курсор обновляется только после успешного шага.
+4. **Сбор Insights.** Для каждого поста проверяется TTL; свежие записи пропускаются, а метрики запрашиваются по эндпоинту `https://graph.threads.net/v1.0/{post_id}/insights?metric=views,likes,replies,reposts,quotes,shares`, что заметно сокращает число запросов к API.
 5. **Запись в Google Sheets.** Данные сливаются с текущей таблицей: новые колонки добавляются автоматически, а отметка `updated_at` обновляется при каждой выгрузке.
 
 ### Интеграция с GitHub Actions

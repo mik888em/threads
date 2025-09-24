@@ -40,6 +40,7 @@ class ThreadsClient:
         timeout: float,
         concurrency_limit: int = 5,
         transport: Optional[httpx.AsyncBaseTransport] = None,
+        api_version: str = "v1.0",
     ) -> None:
         """Создаёт новый экземпляр клиента.
 
@@ -51,6 +52,7 @@ class ThreadsClient:
         """
 
         self._base_url = base_url.rstrip("/")
+        self._api_prefix = f"/{api_version.strip('/')}" if api_version else ""
         self._client = httpx.AsyncClient(base_url=self._base_url, timeout=timeout, transport=transport)
         self._semaphore = asyncio.Semaphore(concurrency_limit)
         self._concurrency_limit = concurrency_limit
@@ -79,7 +81,9 @@ class ThreadsClient:
 
         posts: List[ThreadsPost] = []
         cursor = after
-        params: Dict[str, Any] = {"fields": "id,permalink,text,media_type,media_url,like_count,repost_count,reply_count"}
+        params: Dict[str, Any] = {
+            "fields": "id,permalink,text,media_type,media_url,like_count,repost_count,reply_count",
+        }
         if after:
             params["after"] = after
 
@@ -121,7 +125,8 @@ class ThreadsClient:
             reraise=True,
         ):
             with attempt:
-                response = await self._client.get(path, params=params, headers=headers)
+                url_path = self._build_url_path(path)
+                response = await self._client.get(url_path, params=params, headers=headers)
                 response.raise_for_status()
                 return response.json()
         raise ThreadsAPIError("Не удалось получить ответ от Threads API")
@@ -129,22 +134,17 @@ class ThreadsClient:
     async def fetch_post_insights(self, access_token: str, post_id: str) -> Dict[str, int]:
         """Возвращает метрики Insights для указанного поста."""
 
-        metrics_map = {
-            "view_count": "views",
-            "like_count": "likes",
-            "reply_count": "replies",
-            "repost_count": "reposts",
-            "quote_count": "quotes",
-            "share_count": "shares",
-        }
-        params = {"metric": ",".join(metrics_map.keys())}
+        metrics = ("views", "likes", "replies", "reposts", "quotes", "shares")
+        params = {"metric": ",".join(metrics)}
         async with self._semaphore:
             data = await self._request(f"/{post_id}/insights", access_token=access_token, params=params)
 
-        insights: Dict[str, int] = {value: 0 for value in metrics_map.values()}
+        insights: Dict[str, int] = {metric: 0 for metric in metrics}
         for item in data.get("data", []):
-            metric_name = metrics_map.get(item.get("name", ""))
+            metric_name = item.get("name", "")
             if not metric_name:
+                continue
+            if metric_name not in insights:
                 continue
             values = item.get("values") or []
             if not values:
@@ -155,6 +155,13 @@ class ThreadsClient:
             except (TypeError, ValueError):
                 continue
         return insights
+
+    def _build_url_path(self, path: str) -> str:
+        if not path.startswith("/"):
+            path = f"/{path}"
+        if self._api_prefix and not path.startswith(self._api_prefix):
+            return f"{self._api_prefix}{path}"
+        return path
 
     @staticmethod
     def _sanitize_permalink(permalink: str) -> str:
