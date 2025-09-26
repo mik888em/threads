@@ -355,7 +355,11 @@ class GoogleSheetsClient:
         except Exception:
             logging.exception(
                 "Не удалось применить форматирование листа Google Sheets",
-                extra={"context": json.dumps({"rows": rows, "columns": columns})},
+                extra={
+                    "context": json.dumps(
+                        {"rows": rows_count, "columns": columns}
+                    )
+                },
             )
 
     def get_last_processed_cursor(self, account_name: str) -> Optional[str]:
