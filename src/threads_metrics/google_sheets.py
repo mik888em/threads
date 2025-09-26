@@ -125,19 +125,95 @@ class GoogleSheetsClient:
             df[timestamp_column] = now
             df = self._deduplicate(df, timestamp_column)
 
-            existing = sheet.get_all_records()
-            existing_df = pd.DataFrame(existing)
+            existing_records = sheet.get_all_records()
+            existing_df = pd.DataFrame(existing_records)
+
             if not existing_df.empty:
-                df = self._merge_existing(
+                merged_df = self._merge_existing(
                     existing_df, df, timestamp_column=timestamp_column
                 )
+            else:
+                merged_df = df
 
-            df = self._align_columns(existing_df, df)
-            sheet.clear()
-            sheet.update(
-                [df.columns.tolist()] + df.fillna("").astype(str).values.tolist()
+            merged_df = self._align_columns(existing_df, merged_df)
+
+            columns = list(merged_df.columns)
+            final_values = merged_df.map(self._stringify_value)
+
+            existing_aligned = (
+                existing_df.reindex(columns=columns, fill_value=pd.NA)
+                if not existing_df.empty
+                else pd.DataFrame(columns=columns)
             )
-            self._apply_formatting(sheet, len(df) + 1, len(df.columns))
+            existing_values = existing_aligned.map(self._stringify_value)
+
+            key_columns = [
+                col for col in ("account_name", "post_id") if col in columns
+            ]
+            if not key_columns:
+                key_columns = [col for col in columns if col != timestamp_column]
+
+            def _build_key(series: pd.Series) -> tuple[str, ...]:
+                if not key_columns:
+                    return tuple()
+                return tuple(self._normalize_key(series[col]) for col in key_columns)
+
+            existing_header = list(existing_df.columns) if not existing_df.empty else []
+
+            existing_map: Dict[tuple[str, ...], int] = {}
+            existing_rows_map: Dict[tuple[str, ...], List[str]] = {}
+            for idx, row in existing_values.iterrows():
+                key = _build_key(row)
+                existing_map[key] = idx
+                existing_rows_map[key] = [row[col] for col in columns]
+
+            batch_payload: List[Dict[str, Any]] = []
+            updates: List[Dict[str, Any]] = []
+            appended_rows: List[List[str]] = []
+
+            for _, row in final_values.iterrows():
+                key = _build_key(row)
+                values = [row[col] for col in columns]
+                if key in existing_map:
+                    if values != existing_rows_map.get(key, []):
+                        row_number = existing_map[key] + 2
+                        end_cell = rowcol_to_a1(row_number, len(columns))
+                        updates.append(
+                            {
+                                "range": f"A{row_number}:{end_cell}",
+                                "values": [values],
+                            }
+                        )
+                else:
+                    appended_rows.append(values)
+
+            if existing_header != columns:
+                header_end = rowcol_to_a1(1, len(columns))
+                batch_payload.append({"range": f"A1:{header_end}", "values": [columns]})
+
+            batch_payload.extend(updates)
+
+            if appended_rows:
+                start_row = len(existing_df.index) + 2
+                end_row = start_row + len(appended_rows) - 1
+                start_cell = rowcol_to_a1(start_row, 1)
+                end_cell = rowcol_to_a1(end_row, len(columns))
+                batch_payload.append(
+                    {"range": f"{start_cell}:{end_cell}", "values": appended_rows}
+                )
+
+            if batch_payload:
+                sheet.batch_update(batch_payload)
+
+            if appended_rows:
+                start_row = len(existing_df.index) + 2
+                self._apply_formatting(
+                    sheet,
+                    start_row=start_row,
+                    rows_count=len(appended_rows),
+                    columns=len(columns),
+                )
+
             self._state_store.update_last_metrics_write()
         except Exception:
             logging.exception(
@@ -236,12 +312,26 @@ class GoogleSheetsClient:
             return ""
         return str(value).strip()
 
-    def _apply_formatting(self, sheet: Any, rows: int, columns: int) -> None:
-        if rows <= 0 or columns <= 0:
+    @staticmethod
+    def _stringify_value(value: Any) -> str:
+        if pd.isna(value):
+            return ""
+        if isinstance(value, float) and float(value).is_integer():
+            return str(int(value))
+        return str(value)
+
+    def _apply_formatting(
+        self, sheet: Any, *, start_row: int, rows_count: int, columns: int
+    ) -> None:
+        if rows_count <= 0 or columns <= 0:
             return
         try:
-            end_cell = rowcol_to_a1(rows, columns)
-            sheet.format(f"A1:{end_cell}", {"wrapStrategy": "OVERFLOW_CELL"})
+            end_row = start_row + rows_count - 1
+            start_cell = rowcol_to_a1(start_row, 1)
+            end_cell = rowcol_to_a1(end_row, columns)
+            sheet.format(
+                f"{start_cell}:{end_cell}", {"wrapStrategy": "OVERFLOW_CELL"}
+            )
             sheet.spreadsheet.batch_update(
                 {
                     "requests": [
@@ -250,8 +340,8 @@ class GoogleSheetsClient:
                                 "range": {
                                     "sheetId": sheet.id,
                                     "dimension": "ROWS",
-                                    "startIndex": 0,
-                                    "endIndex": rows,
+                                    "startIndex": start_row - 1,
+                                    "endIndex": end_row,
                                 },
                                 "properties": {"pixelSize": 21},
                                 "fields": "pixelSize",
