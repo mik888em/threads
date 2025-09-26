@@ -7,7 +7,7 @@ from typing import Dict, List
 
 import httpx
 
-from threads_metrics.gh_cancel import cancel_pending_workflow_runs
+from threads_metrics.gh_cancel import WORKFLOW_FILE, cancel_pending_workflow_runs
 
 BASE_URL = "https://api.github.com"
 
@@ -70,15 +70,18 @@ def test_cancel_pending_when_active_run_exists() -> None:
 
     owner = "octo"
     repo = "threads"
+    workflow_runs_url = (
+        f"{BASE_URL}/repos/{owner}/{repo}/actions/workflows/{WORKFLOW_FILE}/runs"
+    )
     responses = {
         "in_progress": _make_response(
             "GET",
-            f"{BASE_URL}/repos/{owner}/{repo}/actions/runs",
+            workflow_runs_url,
             json_body=_runs_payload([101]),
         ),
         "queued": _make_response(
             "GET",
-            f"{BASE_URL}/repos/{owner}/{repo}/actions/runs",
+            workflow_runs_url,
             json_body=_runs_payload([202, 303]),
         ),
     }
@@ -96,9 +99,10 @@ def test_cancel_pending_when_active_run_exists() -> None:
         )
     )
 
+    expected_path = f"/repos/{owner}/{repo}/actions/workflows/{WORKFLOW_FILE}/runs"
     assert client.get_calls == [
-        (f"/repos/{owner}/{repo}/actions/runs", "in_progress"),
-        (f"/repos/{owner}/{repo}/actions/runs", "queued"),
+        (expected_path, "in_progress"),
+        (expected_path, "queued"),
     ]
     assert client.post_calls == [
         f"/repos/{owner}/{repo}/actions/runs/202/cancel",
@@ -111,18 +115,23 @@ def test_skip_cancel_when_no_active_runs() -> None:
 
     owner = "octo"
     repo = "threads"
+    workflow_runs_url = (
+        f"{BASE_URL}/repos/{owner}/{repo}/actions/workflows/{WORKFLOW_FILE}/runs"
+    )
     responses = {
         "in_progress": _make_response(
             "GET",
-            f"{BASE_URL}/repos/{owner}/{repo}/actions/runs",
+            workflow_runs_url,
             json_body=_runs_payload([]),
         ),
         "queued": _make_response(
             "GET",
-            f"{BASE_URL}/repos/{owner}/{repo}/actions/runs",
+            workflow_runs_url,
             json_body=_runs_payload([404, 505]),
         ),
     }
+
+    expected_path = f"/repos/{owner}/{repo}/actions/workflows/{WORKFLOW_FILE}/runs"
 
     client = _DummyClient(owner, repo, responses)
 
@@ -138,3 +147,7 @@ def test_skip_cancel_when_no_active_runs() -> None:
     )
 
     assert client.post_calls == []
+    assert client.get_calls == [
+        (expected_path, "in_progress"),
+        (expected_path, "queued"),
+    ]

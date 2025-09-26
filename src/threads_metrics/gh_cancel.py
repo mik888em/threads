@@ -31,8 +31,8 @@ async def _fetch_runs(
     """Получает список запусков workflow в заданном статусе."""
 
     response = await client.get(
-        f"/repos/{owner}/{repo}/actions/runs",
-        params={"workflow_id": WORKFLOW_FILE, "status": status},
+        f"/repos/{owner}/{repo}/actions/workflows/{WORKFLOW_FILE}/runs",
+        params={"status": status},
     )
     remaining = response.headers.get("X-RateLimit-Remaining")
     response.raise_for_status()
