@@ -58,6 +58,7 @@ async def app_dependencies(config: Config) -> Any:
         base_url=config.threads_api_base_url,
         timeout=config.request_timeout,
         concurrency_limit=config.concurrency_limit,
+        posts_url_override=config.threads_posts_url_override,
     )
     sheets = GoogleSheetsClient(
         table_id=config.google_table_id,

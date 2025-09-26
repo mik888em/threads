@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
 import httpx
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_random_exponential
+
+logger = logging.getLogger(__name__)
 
 
 class ThreadsAPIError(RuntimeError):
@@ -41,6 +44,7 @@ class ThreadsClient:
         concurrency_limit: int = 5,
         transport: Optional[httpx.AsyncBaseTransport] = None,
         api_version: str = "v1.0",
+        posts_url_override: Optional[str] = None,
     ) -> None:
         """Создаёт новый экземпляр клиента.
 
@@ -56,6 +60,11 @@ class ThreadsClient:
         self._client = httpx.AsyncClient(base_url=self._base_url, timeout=timeout, transport=transport)
         self._semaphore = asyncio.Semaphore(concurrency_limit)
         self._concurrency_limit = concurrency_limit
+        self._posts_path = "/me/threads"
+        self._posts_params: Dict[str, Any] = {
+            "fields": "id,permalink,text,media_type,media_url,like_count,repost_count,reply_count",
+        }
+        self._configure_posts_override(posts_url_override)
 
     async def close(self) -> None:
         """Закрывает клиент."""
@@ -81,15 +90,15 @@ class ThreadsClient:
 
         posts: List[ThreadsPost] = []
         cursor = after
-        params: Dict[str, Any] = {
-            "fields": "id,permalink,text,media_type,media_url,like_count,repost_count,reply_count",
-        }
+        params: Dict[str, Any] = dict(self._posts_params)
         if after:
             params["after"] = after
 
         while True:
             async with self._semaphore:
-                response_data = await self._request("/me/threads", access_token=access_token, params=params)
+                response_data = await self._request(
+                    self._posts_path, access_token=access_token, params=params
+                )
             data = response_data.get("data", [])
             for item in data:
                 permalink = self._sanitize_permalink(item.get("permalink", ""))
@@ -106,6 +115,7 @@ class ThreadsClient:
                 break
 
             cursor = after_cursor
+            params = dict(self._posts_params)
             params["after"] = after_cursor
 
             if not next_url:
@@ -162,6 +172,40 @@ class ThreadsClient:
         if self._api_prefix and not path.startswith(self._api_prefix):
             return f"{self._api_prefix}{path}"
         return path
+
+    def _configure_posts_override(self, posts_url_override: Optional[str]) -> None:
+        if not posts_url_override:
+            return
+
+        parsed = urlparse(posts_url_override)
+        if parsed.scheme and parsed.netloc:
+            override_base = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+            if override_base and override_base != self._base_url:
+                logger.warning(
+                    "Игнорируем override URL постов: домен не совпадает с базовым URL",
+                )
+                return
+
+        if parsed.path:
+            path = parsed.path
+            if not path.startswith("/"):
+                path = f"/{path}"
+            self._posts_path = path
+
+        query_params = parse_qs(parsed.query, keep_blank_values=True) if parsed.query else {}
+        if not query_params:
+            return
+
+        filtered_params: Dict[str, Any] = {}
+        for key, values in query_params.items():
+            if not values:
+                continue
+            if key == "after":
+                continue
+            filtered_params[key] = values[0] if len(values) == 1 else values
+
+        if filtered_params:
+            self._posts_params = filtered_params
 
     @staticmethod
     def _sanitize_permalink(permalink: str) -> str:

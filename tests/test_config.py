@@ -12,11 +12,19 @@ def test_config_from_env_success(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ID_GOOGLE_TABLE", "table")
     monkeypatch.setenv("URL_GAS_RAZVERTIVANIA", "https://example.com")
     monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON", "{}")
+    monkeypatch.setenv(
+        "URL_THREADS_TAKE_ID_FROM_CURRENT_ACCOUNT_ID_and_PERMALINK_only",
+        " https://graph.threads.net/v1.0/me/threads?fields=id,permalink ",
+    )
 
     config = Config.from_env()
 
     assert config.google_table_id == "table"
     assert config.threads_api_base_url == "https://graph.threads.net"
+    assert (
+        config.threads_posts_url_override
+        == "https://graph.threads.net/v1.0/me/threads?fields=id,permalink"
+    )
     assert config.run_timeout_minutes == 100
 
 
