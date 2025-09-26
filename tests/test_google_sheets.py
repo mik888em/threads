@@ -207,7 +207,7 @@ def test_write_posts_metrics_updates_existing_rows_and_formats(
                 "post_id": "123",
                 "permalink": "https://example.com/post",
                 "text": "new text",
-                "like_count": 5,
+                "like_count": 6,
                 "repost_count": 2,
                 "reply_count": 1,
                 "views": 15,
@@ -232,7 +232,12 @@ def test_write_posts_metrics_updates_existing_rows_and_formats(
     text_index = header.index("text")
     updated_at_index = header.index("updated_at")
 
-    assert row[like_index] == "5"
+    reply_index = header.index("reply_count")
+    repost_index = header.index("repost_count")
+
+    assert row[like_index] == "6"
+    assert row[reply_index] == "1"
+    assert row[repost_index] == "2"
     assert row[text_index] == "new text"
     assert row[updated_at_index] != "2024-01-01T00:00:00+03:00"
 

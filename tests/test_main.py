@@ -47,6 +47,9 @@ def test_aggregate_posts_merges_insights() -> None:
     assert first["likes"] == 15
     assert first["replies"] == 4
     assert first["reposts"] == 6
+    assert first["like_count"] == 15
+    assert first["reply_count"] == 4
+    assert first["repost_count"] == 6
     assert first["quotes"] == 2
     assert first["shares"] == 3
 
@@ -54,5 +57,8 @@ def test_aggregate_posts_merges_insights() -> None:
     assert second["likes"] == 5
     assert second["replies"] == 1
     assert second["reposts"] == 0
+    assert second["like_count"] == 5
+    assert second["reply_count"] == 1
+    assert second["repost_count"] == 0
     assert second["quotes"] is None
     assert second["shares"] is None
