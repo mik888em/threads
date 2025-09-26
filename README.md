@@ -106,6 +106,21 @@ python -m threads_metrics.main run
 - Джобу ограничивает внешний таймаут в 100 минут, а сам сервис завершится раньше (по умолчанию через 100 минут ожидания, значение настраивается через `THREADS_RUN_TIMEOUT_MIN`), если зависнет или получит сигнал остановки.
 - Для локального запуска используется та же команда `python -m threads_metrics.main run`, поэтому отладка и CI ведут себя одинаково.
 
+### Отмена ожидающих запусков GitHub Actions
+
+Для предотвращения накопления очереди workflow `threads-metrics.yml` добавлена подкоманда `cancel-pending`:
+
+```bash
+export GITHUB_OWNER=acme
+export GITHUB_REPO=threads-metrics
+export GITHUB_TOKEN=ghp_xxx
+python -m threads_metrics.main cancel-pending --interval 10
+```
+
+Переменные окружения `GITHUB_OWNER`, `GITHUB_REPO` и `GITHUB_TOKEN` обязательны. Токен должен иметь доступ к GitHub Actions выбранного репозитория, чтобы читать список запусков и отправлять запросы отмены.
+
+Скрипт раз в `--interval` секунд (по умолчанию 10) опрашивает GitHub REST API: ищет активные (`in_progress`) запуски workflow `threads-metrics.yml` и отменяет все ожидающие (`queued`). При превышении лимита запросов он использует экспоненциальный бэкофф и повторяет попытку после паузы, а на `SIGINT`/`SIGTERM` корректно завершает работу. Логи остаются в JSON-формате (`ts`, `level`, `msg`, `context`), поэтому отмена очередей вписывается в существующую систему наблюдаемости.
+
 ## Тесты
 
 ```bash
