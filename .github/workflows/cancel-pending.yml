@@ -1,0 +1,30 @@
+name: Cancel queued Threads Metrics runs
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "* * * * *"
+
+concurrency:
+  group: cancel-pending
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run watchdog loop
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          export PYTHONPATH=src
+          export GITHUB_OWNER="${GITHUB_REPOSITORY%%/*}"
+          export GITHUB_REPO="${GITHUB_REPOSITORY##*/}"
+          python -m threads_metrics.main cancel-pending --interval 10
