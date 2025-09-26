@@ -196,6 +196,8 @@ class GoogleSheetsClient:
             if appended_rows:
                 start_row = len(existing_df.index) + 2
                 end_row = start_row + len(appended_rows) - 1
+                if end_row > sheet.row_count:
+                    sheet.add_rows(end_row - sheet.row_count)
                 start_cell = rowcol_to_a1(start_row, 1)
                 end_cell = rowcol_to_a1(end_row, len(columns))
                 batch_payload.append(
