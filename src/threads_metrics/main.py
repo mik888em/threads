@@ -1,4 +1,5 @@
 """Точка входа приложения для сбора метрик Threads."""
+
 from __future__ import annotations
 
 import argparse
@@ -6,6 +7,7 @@ import asyncio
 import datetime as dt
 import json
 import logging
+import os
 import signal
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Iterable, List, Mapping
@@ -15,6 +17,7 @@ import httpx
 from .aggregation import aggregate_posts
 from .config import Config, ConfigError
 from .google_sheets import AccountToken, GoogleSheetsClient
+from .gh_cancel import DEFAULT_INTERVAL_SECONDS, cancel_pending_workflow_runs
 from .state_store import StateStore, TIMEZONE
 from .threads_client import ThreadsClient, ThreadsAPIError
 
@@ -43,12 +46,46 @@ def setup_logging() -> None:
     logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
 
 
+def _require_github_env() -> tuple[str, str, str]:
+    """Возвращает параметры репозитория из окружения."""
+
+    required = ("GITHUB_OWNER", "GITHUB_REPO", "GITHUB_TOKEN")
+    missing = [name for name in required if not os.getenv(name)]
+    if missing:
+        message = f"Отсутствуют переменные окружения: {', '.join(missing)}"
+        logging.error(message, extra={"context": json.dumps({})})
+        raise ConfigError(message)
+
+    owner = os.environ["GITHUB_OWNER"]
+    repo = os.environ["GITHUB_REPO"]
+    token = os.environ["GITHUB_TOKEN"]
+    return owner, repo, token
+
+
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     """Разбирает аргументы командной строки."""
 
     parser = argparse.ArgumentParser(description="Сборщик метрик Threads")
-    parser.add_argument("run", nargs="?", default="run", help="Команда запуска (по умолчанию run)")
-    return parser.parse_args(argv)
+    subparsers = parser.add_subparsers(dest="command")
+
+    run_parser = subparsers.add_parser("run", help="Сбор метрик Threads")
+    run_parser.set_defaults(command="run")
+
+    cancel_parser = subparsers.add_parser(
+        "cancel-pending", help="Отмена ожидающих запусков workflow threads-metrics"
+    )
+    cancel_parser.add_argument(
+        "--interval",
+        type=int,
+        default=DEFAULT_INTERVAL_SECONDS,
+        help="Интервал проверки GitHub Actions (секунды)",
+    )
+    cancel_parser.set_defaults(command="cancel-pending")
+
+    args = parser.parse_args(argv)
+    if args.command is None:
+        setattr(args, "command", "run")
+    return args
 
 
 @asynccontextmanager
@@ -228,6 +265,7 @@ async def collect_insights(
         state_store.update_post_metrics_many(updates)
     return insights_map
 
+
 async def heartbeat() -> None:
     """Периодически пишет heartbeat-логи."""
 
@@ -288,16 +326,34 @@ def main(argv: Iterable[str] | None = None) -> None:
 
     setup_logging()
     args = parse_args(argv)
-    if args.run != "run":
-        raise ConfigError("Поддерживается только команда run")
+    command = getattr(args, "command", "run")
 
-    try:
-        config = Config.from_env()
-    except ConfigError as exc:
-        logging.error("Ошибка конфигурации: %s", exc, extra={"context": json.dumps({})})
-        raise
+    if command == "run":
+        try:
+            config = Config.from_env()
+        except ConfigError as exc:
+            logging.error(
+                "Ошибка конфигурации: %s", exc, extra={"context": json.dumps({})}
+            )
+            raise
+        asyncio.run(main_async(config))
+        return
 
-    asyncio.run(main_async(config))
+    if command == "cancel-pending":
+        owner, repo, token = _require_github_env()
+        interval = getattr(args, "interval", DEFAULT_INTERVAL_SECONDS)
+        if interval < 0:
+            raise ConfigError("Интервал не может быть отрицательным")
+        logging.info(
+            "Запуск отмены очереди GitHub Actions",
+            extra={"context": json.dumps({"owner": owner, "repo": repo})},
+        )
+        asyncio.run(
+            cancel_pending_workflow_runs(owner, repo, token, interval_seconds=interval)
+        )
+        return
+
+    raise ConfigError(f"Неизвестная команда: {command}")
 
 
 if __name__ == "__main__":
