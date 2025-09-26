@@ -10,11 +10,13 @@ import signal
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Iterable, List, Mapping
 
+import httpx
+
 from .aggregation import aggregate_posts
 from .config import Config, ConfigError
 from .google_sheets import AccountToken, GoogleSheetsClient
 from .state_store import StateStore, TIMEZONE
-from .threads_client import ThreadsClient
+from .threads_client import ThreadsClient, ThreadsAPIError
 
 HEARTBEAT_INTERVAL = 30
 
@@ -136,7 +138,16 @@ async def collect_posts(
 
     async def _collect_for_account(token: AccountToken) -> List[Dict[str, Any]]:
         cursor = sheets.get_last_processed_cursor(token.account_name)
-        result = await client.fetch_posts(token.token, after=cursor)
+        try:
+            result = await client.fetch_posts(token.token, after=cursor)
+        except (httpx.HTTPStatusError, ThreadsAPIError) as exc:
+            logging.warning(
+                "Не удалось получить посты для аккаунта %s: %s",
+                token.account_name,
+                exc,
+                extra={"context": json.dumps({"account": token.account_name})},
+            )
+            return []
         posts_data = []
         for post in result.posts:
             post_data = post.data | {"permalink": post.permalink, "account_name": token.account_name}
