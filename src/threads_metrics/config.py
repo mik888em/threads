@@ -67,8 +67,12 @@ class Config:
 
         threads_api_base_url = env_map.get("THREADS_API_BASE_URL", "https://graph.threads.net")
         threads_posts_url_override = env_map.get(
-            "URL_THREADS_TAKE_ID_FROM_CURRENT_ACCOUNT_ID_and_PERMALINK_only"
+            "URL_THREADS_TAKE_ID_FROM_CURRENT_ACCOUNT_ID_AND_PERMALINK_ONLY"
         )
+        if threads_posts_url_override is None:
+            threads_posts_url_override = env_map.get(
+                "URL_THREADS_TAKE_ID_FROM_CURRENT_ACCOUNT_ID_and_PERMALINK_only"
+            )
         if threads_posts_url_override:
             threads_posts_url_override = threads_posts_url_override.strip() or None
         request_timeout = cls._parse_float(env_map.get("THREADS_REQUEST_TIMEOUT", "30"),
