@@ -21,6 +21,7 @@ class Config:
         gas_deployment_url: URL развёрнутого Google Apps Script.
         service_account_info: Данные сервисного аккаунта Google.
         threads_api_base_url: Базовый URL API Threads.
+        threads_posts_url_override: Переопределение URL получения постов.
         request_timeout: Таймаут HTTP-запросов.
         concurrency_limit: Ограничение параллелизма для запросов.
         state_file: Путь к файлу состояния.
@@ -32,6 +33,7 @@ class Config:
     gas_deployment_url: str
     service_account_info: Dict[str, Any]
     threads_api_base_url: str
+    threads_posts_url_override: Optional[str]
     request_timeout: float
     concurrency_limit: int
     state_file: Path
@@ -64,6 +66,11 @@ class Config:
             raise ConfigError("Невозможно разобрать JSON сервисного аккаунта") from exc
 
         threads_api_base_url = env_map.get("THREADS_API_BASE_URL", "https://graph.threads.net")
+        threads_posts_url_override = env_map.get(
+            "URL_THREADS_TAKE_ID_FROM_CURRENT_ACCOUNT_ID_and_PERMALINK_only"
+        )
+        if threads_posts_url_override:
+            threads_posts_url_override = threads_posts_url_override.strip() or None
         request_timeout = cls._parse_float(env_map.get("THREADS_REQUEST_TIMEOUT", "30"),
                                            "THREADS_REQUEST_TIMEOUT")
         concurrency_limit = cls._parse_int(env_map.get("THREADS_CONCURRENCY", "5"),
@@ -81,6 +88,7 @@ class Config:
             gas_deployment_url=gas_deployment_url,
             service_account_info=service_account_info,
             threads_api_base_url=threads_api_base_url.rstrip("/"),
+            threads_posts_url_override=threads_posts_url_override,
             request_timeout=request_timeout,
             concurrency_limit=concurrency_limit,
             state_file=state_file,
