@@ -163,6 +163,17 @@ class DummyWorksheet:
     def spreadsheet(self) -> DummySpreadsheetBackend:
         return self._backend
 
+    @property
+    def row_count(self) -> int:
+        return len(self._grid)
+
+    def add_rows(self, count: int) -> None:
+        if count <= 0:
+            return
+        width = self._current_width() or 1
+        for _ in range(count):
+            self._grid.append([""] * width)
+
 
 class DummySpreadsheet:
     """Простая обёртка над заглушками листов."""
@@ -222,9 +233,6 @@ def test_write_posts_metrics_updates_existing_rows_and_formats(
             "post_id": 123,
             "permalink": "https://example.com/post",
             "text": "old text",
-            "like_count": 1,
-            "repost_count": 1,
-            "reply_count": 0,
             "views": 10,
             "likes": 1,
             "replies": 0,
@@ -238,9 +246,6 @@ def test_write_posts_metrics_updates_existing_rows_and_formats(
             "post_id": 456,
             "permalink": "https://example.com/post2",
             "text": "keep text",
-            "like_count": 2,
-            "repost_count": 0,
-            "reply_count": 0,
             "views": 20,
             "likes": 2,
             "replies": 0,
@@ -275,9 +280,6 @@ def test_write_posts_metrics_updates_existing_rows_and_formats(
                 "post_id": "123",
                 "permalink": "https://example.com/post",
                 "text": "new text",
-                "like_count": 6,
-                "repost_count": 2,
-                "reply_count": 1,
                 "views": 15,
                 "likes": 6,
                 "replies": 1,
@@ -290,9 +292,6 @@ def test_write_posts_metrics_updates_existing_rows_and_formats(
                 "post_id": "789",
                 "permalink": "https://example.com/post3",
                 "text": "brand new",
-                "like_count": 3,
-                "repost_count": 0,
-                "reply_count": 0,
                 "views": 5,
                 "likes": 3,
                 "replies": 0,
@@ -315,22 +314,26 @@ def test_write_posts_metrics_updates_existing_rows_and_formats(
     third_row = updated_records[2]
 
     assert first_row["text"] == "new text"
-    assert first_row["like_count"] == "6"
-    assert first_row["reply_count"] == "1"
-    assert first_row["repost_count"] == "2"
+    assert first_row["likes"] == "6"
+    assert first_row["replies"] == "1"
+    assert first_row["reposts"] == "2"
     assert first_row["updated_at"] != "2024-01-01T00:00:00+03:00"
+    assert "like_count" not in first_row
+    assert "reply_count" not in first_row
+    assert "repost_count" not in first_row
 
     assert second_row["text"] == "keep text"
-    assert second_row["like_count"] == "2"
+    assert second_row["likes"] == "2"
 
     assert third_row["post_id"] == "789"
-    assert third_row["like_count"] == "3"
+    assert third_row["likes"] == "3"
+    assert "like_count" not in third_row
 
     batch_payload = data_sheet.batch_update_calls[0]
     assert any(item["range"].startswith("A2") for item in batch_payload)
     assert any(item["range"].startswith("A4") for item in batch_payload)
 
-    assert data_sheet.formats == [("A4:N4", {"wrapStrategy": "OVERFLOW_CELL"})]
+    assert data_sheet.formats == [("A4:K4", {"wrapStrategy": "OVERFLOW_CELL"})]
     assert data_sheet.spreadsheet.requests
     update_request = data_sheet.spreadsheet.requests[0]["requests"][0]
     assert update_request["updateDimensionProperties"]["properties"]["pixelSize"] == 21
@@ -345,9 +348,6 @@ def test_write_posts_metrics_updates_without_new_rows(monkeypatch: pytest.Monkey
             "post_id": 123,
             "permalink": "https://example.com/post",
             "text": "old text",
-            "like_count": 1,
-            "repost_count": 1,
-            "reply_count": 0,
             "views": 10,
             "likes": 1,
             "replies": 0,
@@ -382,9 +382,6 @@ def test_write_posts_metrics_updates_without_new_rows(monkeypatch: pytest.Monkey
                 "post_id": "123",
                 "permalink": "https://example.com/post",
                 "text": "new text",
-                "like_count": 6,
-                "repost_count": 2,
-                "reply_count": 1,
                 "views": 15,
                 "likes": 6,
                 "replies": 1,
