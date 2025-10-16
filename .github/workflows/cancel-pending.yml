@@ -27,4 +27,4 @@ jobs:
           export PYTHONPATH=src
           export GITHUB_OWNER="${GITHUB_REPOSITORY%%/*}"
           export GITHUB_REPO="${GITHUB_REPOSITORY##*/}"
-          python -m threads_metrics.main cancel-pending --interval 10
+          python -m threads_metrics.main cancel-pending --interval 30
