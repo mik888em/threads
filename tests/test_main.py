@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from threads_metrics.aggregation import aggregate_posts
+from threads_metrics.constants import PUBLISH_TIME_COLUMN
 from threads_metrics.google_sheets import AccountToken
 from threads_metrics.main import collect_posts
 from threads_metrics.threads_client import ThreadsFetchResult, ThreadsPost
@@ -27,6 +28,7 @@ def test_aggregate_posts_merges_insights() -> None:
             "like_count": 10,
             "reply_count": 2,
             "repost_count": 3,
+            "timestamp": "2025-10-06T19:16:42+0000",
         },
         {
             "id": "2",
@@ -36,6 +38,7 @@ def test_aggregate_posts_merges_insights() -> None:
             "like_count": 5,
             "reply_count": 1,
             "repost_count": 0,
+            "timestamp": "2025-10-07T01:00:00+0000",
         },
     ]
     insights = {
@@ -54,6 +57,7 @@ def test_aggregate_posts_merges_insights() -> None:
     first = next(item for item in aggregated if item["post_id"] == "1")
     second = next(item for item in aggregated if item["post_id"] == "2")
 
+    assert first[PUBLISH_TIME_COLUMN] == "2025-10-06T22:16:42+03:00"
     assert first["views"] == 120
     assert first["likes"] == 15
     assert first["replies"] == 4
@@ -64,6 +68,7 @@ def test_aggregate_posts_merges_insights() -> None:
     assert "reply_count" not in first
     assert "repost_count" not in first
 
+    assert second[PUBLISH_TIME_COLUMN] == "2025-10-07T04:00:00+03:00"
     assert second["views"] is None
     assert second["likes"] == 5
     assert second["replies"] == 1

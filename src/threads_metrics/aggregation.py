@@ -1,7 +1,11 @@
 """Функции агрегации метрик постов."""
 from __future__ import annotations
 
+import datetime as dt
 from typing import Any, Dict, List, Mapping
+
+from .constants import PUBLISH_TIME_COLUMN
+from .state_store import TIMEZONE
 
 
 def aggregate_posts(
@@ -44,6 +48,7 @@ def aggregate_posts(
         )
         aggregated.append(
             {
+                PUBLISH_TIME_COLUMN: _convert_timestamp(post.get("timestamp")),
                 "account_name": post.get("account_name"),
                 "post_id": post_id,
                 "permalink": post.get("permalink"),
@@ -57,6 +62,18 @@ def aggregate_posts(
             }
         )
     return aggregated
+
+
+def _convert_timestamp(raw_value: Any) -> str:
+    """Конвертирует отметку публикации в часовой пояс Афин."""
+
+    if not raw_value:
+        return ""
+    try:
+        parsed = dt.datetime.strptime(str(raw_value), "%Y-%m-%dT%H:%M:%S%z")
+    except (TypeError, ValueError):
+        return str(raw_value)
+    return parsed.astimezone(TIMEZONE).isoformat()
 
 
 __all__ = ["aggregate_posts"]

@@ -13,6 +13,7 @@ import pandas as pd
 from google.oauth2.service_account import Credentials
 from gspread.utils import rowcol_to_a1
 
+from .constants import PUBLISH_TIME_COLUMN
 from .state_store import StateStore
 
 TIMEZONE = dt.timezone(dt.timedelta(hours=3), name="Europe/Athens")
@@ -136,83 +137,35 @@ class GoogleSheetsClient:
                 merged_df = df
 
             merged_df = self._align_columns(existing_df, merged_df)
+            merged_df = self._sort_by_publish_time(
+                merged_df, publish_column=PUBLISH_TIME_COLUMN
+            )
 
             columns = list(merged_df.columns)
             final_values = merged_df.map(self._stringify_value)
 
-            existing_aligned = (
-                existing_df.reindex(columns=columns, fill_value=pd.NA)
-                if not existing_df.empty
-                else pd.DataFrame(columns=columns)
-            )
-            existing_values = existing_aligned.map(self._stringify_value)
-
-            key_columns = [
-                col for col in ("account_name", "post_id") if col in columns
-            ]
-            if not key_columns:
-                key_columns = [col for col in columns if col != timestamp_column]
-
-            def _build_key(series: pd.Series) -> tuple[str, ...]:
-                if not key_columns:
-                    return tuple()
-                return tuple(self._normalize_key(series[col]) for col in key_columns)
-
-            existing_header = list(existing_df.columns) if not existing_df.empty else []
-
-            existing_map: Dict[tuple[str, ...], int] = {}
-            existing_rows_map: Dict[tuple[str, ...], List[str]] = {}
-            for idx, row in existing_values.iterrows():
-                key = _build_key(row)
-                existing_map[key] = idx
-                existing_rows_map[key] = [row[col] for col in columns]
-
-            batch_payload: List[Dict[str, Any]] = []
-            updates: List[Dict[str, Any]] = []
-            appended_rows: List[List[str]] = []
-
-            for _, row in final_values.iterrows():
-                key = _build_key(row)
-                values = [row[col] for col in columns]
-                if key in existing_map:
-                    if values != existing_rows_map.get(key, []):
-                        row_number = existing_map[key] + 2
-                        end_cell = rowcol_to_a1(row_number, len(columns))
-                        updates.append(
-                            {
-                                "range": f"A{row_number}:{end_cell}",
-                                "values": [values],
-                            }
-                        )
-                else:
-                    appended_rows.append(values)
-
-            if existing_header != columns:
-                header_end = rowcol_to_a1(1, len(columns))
-                batch_payload.append({"range": f"A1:{header_end}", "values": [columns]})
-
-            batch_payload.extend(updates)
-
-            if appended_rows:
-                start_row = len(existing_df.index) + 2
-                end_row = start_row + len(appended_rows) - 1
-                if end_row > sheet.row_count:
-                    sheet.add_rows(end_row - sheet.row_count)
-                start_cell = rowcol_to_a1(start_row, 1)
-                end_cell = rowcol_to_a1(end_row, len(columns))
-                batch_payload.append(
-                    {"range": f"{start_cell}:{end_cell}", "values": appended_rows}
+            total_rows = max(len(existing_df.index), len(final_values.index))
+            padded_rows = final_values.to_numpy().tolist()
+            if total_rows > len(padded_rows):
+                padded_rows.extend(
+                    [[""] * len(columns) for _ in range(total_rows - len(padded_rows))]
                 )
 
-            if batch_payload:
-                sheet.batch_update(batch_payload)
+            all_values = [columns] + padded_rows
+            total_rows_needed = len(all_values)
+            if total_rows_needed > sheet.row_count:
+                sheet.add_rows(total_rows_needed - sheet.row_count)
 
-            if appended_rows:
-                start_row = len(existing_df.index) + 2
+            end_cell = rowcol_to_a1(total_rows_needed, len(columns))
+            sheet.batch_update([
+                {"range": f"A1:{end_cell}", "values": all_values}
+            ])
+
+            if final_values.index.size > 0:
                 self._apply_formatting(
                     sheet,
-                    start_row=start_row,
-                    rows_count=len(appended_rows),
+                    start_row=2,
+                    rows_count=final_values.index.size,
                     columns=len(columns),
                 )
 
@@ -299,14 +252,28 @@ class GoogleSheetsClient:
     def _align_columns(
         self, existing_df: pd.DataFrame, new_df: pd.DataFrame
     ) -> pd.DataFrame:
-        if existing_df.empty:
-            return new_df
+        desired_order: List[str] = list(new_df.columns)
+        if not existing_df.empty:
+            for column in existing_df.columns:
+                if column not in desired_order:
+                    desired_order.append(column)
+        return new_df.reindex(columns=desired_order, fill_value=pd.NA)
 
-        columns_order: List[str] = list(existing_df.columns)
-        for column in new_df.columns:
-            if column not in columns_order:
-                columns_order.append(column)
-        return new_df.reindex(columns=columns_order, fill_value=pd.NA)
+    @staticmethod
+    def _sort_by_publish_time(
+        df: pd.DataFrame, *, publish_column: str
+    ) -> pd.DataFrame:
+        if publish_column not in df.columns:
+            return df.reset_index(drop=True)
+
+        df_sorted = df.copy()
+        sort_key = pd.to_datetime(df_sorted[publish_column], errors="coerce")
+        df_sorted = df_sorted.assign(_sort_key=sort_key)
+        df_sorted = df_sorted.sort_values(
+            by="_sort_key", kind="mergesort", na_position="first"
+        )
+        df_sorted = df_sorted.drop(columns="_sort_key")
+        return df_sorted.reset_index(drop=True)
 
     @staticmethod
     def _normalize_key(value: Any) -> str:

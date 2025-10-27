@@ -62,7 +62,7 @@ class ThreadsClient:
         self._concurrency_limit = concurrency_limit
         self._posts_path = "/me/threads"
         self._posts_params: Dict[str, Any] = {
-            "fields": "id,permalink,text,media_type,media_url,like_count,repost_count,reply_count",
+            "fields": "id,permalink,text,timestamp,media_type,media_url,like_count,repost_count,reply_count",
         }
         self._configure_posts_override(posts_url_override)
 
