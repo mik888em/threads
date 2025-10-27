@@ -51,6 +51,7 @@ if "google.oauth2.service_account" not in sys.modules:
     service_account_module.Credentials = _StubCredentials  # type: ignore[attr-defined]
     sys.modules["google.oauth2.service_account"] = service_account_module
 
+from src.threads_metrics.constants import PUBLISH_TIME_COLUMN
 from src.threads_metrics.google_sheets import AccountToken, GoogleSheetsClient
 
 
@@ -229,6 +230,7 @@ def test_write_posts_metrics_updates_existing_rows_and_formats(
 ) -> None:
     existing_records = [
         {
+            PUBLISH_TIME_COLUMN: "2024-01-01T09:00:00+03:00",
             "account_name": "acc",
             "post_id": 123,
             "permalink": "https://example.com/post",
@@ -242,6 +244,7 @@ def test_write_posts_metrics_updates_existing_rows_and_formats(
             "updated_at": "2024-01-01T00:00:00+03:00",
         },
         {
+            PUBLISH_TIME_COLUMN: "2024-01-02T11:00:00+03:00",
             "account_name": "acc",
             "post_id": 456,
             "permalink": "https://example.com/post2",
@@ -276,6 +279,7 @@ def test_write_posts_metrics_updates_existing_rows_and_formats(
     client.write_posts_metrics(
         [
             {
+                PUBLISH_TIME_COLUMN: "2024-01-05T12:00:00+03:00",
                 "account_name": "acc",
                 "post_id": "123",
                 "permalink": "https://example.com/post",
@@ -288,6 +292,7 @@ def test_write_posts_metrics_updates_existing_rows_and_formats(
                 "shares": 0,
             },
             {
+                PUBLISH_TIME_COLUMN: "2024-01-06T08:30:00+03:00",
                 "account_name": "acc",
                 "post_id": "789",
                 "permalink": "https://example.com/post3",
@@ -313,37 +318,45 @@ def test_write_posts_metrics_updates_existing_rows_and_formats(
     second_row = updated_records[1]
     third_row = updated_records[2]
 
-    assert first_row["text"] == "new text"
-    assert first_row["likes"] == "6"
-    assert first_row["replies"] == "1"
-    assert first_row["reposts"] == "2"
-    assert first_row["updated_at"] != "2024-01-01T00:00:00+03:00"
-    assert "like_count" not in first_row
-    assert "reply_count" not in first_row
-    assert "repost_count" not in first_row
+    assert first_row["post_id"] == "456"
+    assert first_row[PUBLISH_TIME_COLUMN] == "2024-01-02T11:00:00+03:00"
 
-    assert second_row["text"] == "keep text"
-    assert second_row["likes"] == "2"
+    assert second_row["post_id"] == "123"
+    assert second_row[PUBLISH_TIME_COLUMN] == "2024-01-05T12:00:00+03:00"
+    assert second_row["text"] == "new text"
+    assert second_row["likes"] == "6"
+    assert second_row["replies"] == "1"
+    assert second_row["reposts"] == "2"
+    assert second_row["updated_at"] != "2024-01-01T00:00:00+03:00"
+    assert "like_count" not in second_row
+    assert "reply_count" not in second_row
+    assert "repost_count" not in second_row
 
     assert third_row["post_id"] == "789"
+    assert third_row[PUBLISH_TIME_COLUMN] == "2024-01-06T08:30:00+03:00"
     assert third_row["likes"] == "3"
     assert "like_count" not in third_row
 
     batch_payload = data_sheet.batch_update_calls[0]
-    assert any(item["range"].startswith("A2") for item in batch_payload)
-    assert any(item["range"].startswith("A4") for item in batch_payload)
+    assert batch_payload == [
+        {
+            "range": "A1:L4",
+            "values": data_sheet._grid[:4],
+        }
+    ]
 
-    assert data_sheet.formats == [("A4:K4", {"wrapStrategy": "OVERFLOW_CELL"})]
+    assert data_sheet.formats == [("A2:L4", {"wrapStrategy": "OVERFLOW_CELL"})]
     assert data_sheet.spreadsheet.requests
     update_request = data_sheet.spreadsheet.requests[0]["requests"][0]
     assert update_request["updateDimensionProperties"]["properties"]["pixelSize"] == 21
-    assert update_request["updateDimensionProperties"]["range"]["startIndex"] == 3
+    assert update_request["updateDimensionProperties"]["range"]["startIndex"] == 1
     assert update_request["updateDimensionProperties"]["range"]["endIndex"] == 4
 
 
 def test_write_posts_metrics_updates_without_new_rows(monkeypatch: pytest.MonkeyPatch) -> None:
     existing_records = [
         {
+            PUBLISH_TIME_COLUMN: "2024-01-03T09:00:00+03:00",
             "account_name": "acc",
             "post_id": 123,
             "permalink": "https://example.com/post",
@@ -378,6 +391,7 @@ def test_write_posts_metrics_updates_without_new_rows(monkeypatch: pytest.Monkey
     client.write_posts_metrics(
         [
             {
+                PUBLISH_TIME_COLUMN: "2024-01-05T12:00:00+03:00",
                 "account_name": "acc",
                 "post_id": "123",
                 "permalink": "https://example.com/post",
@@ -394,7 +408,11 @@ def test_write_posts_metrics_updates_without_new_rows(monkeypatch: pytest.Monkey
 
     assert data_sheet.cleared is False
     assert state_store.last_metrics_updated is True
-    assert data_sheet.formats == []
+    assert data_sheet.formats == [("A2:L2", {"wrapStrategy": "OVERFLOW_CELL"})]
     assert data_sheet.batch_update_calls
-    batch_ranges = [item["range"] for item in data_sheet.batch_update_calls[0]]
-    assert batch_ranges == [batch_ranges[0]]
+    assert data_sheet.batch_update_calls[0] == [
+        {
+            "range": "A1:L2",
+            "values": data_sheet._grid[:2],
+        }
+    ]
