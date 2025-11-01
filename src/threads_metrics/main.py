@@ -30,7 +30,11 @@ class ContextJsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         if not hasattr(record, "context"):
             record.context = json.dumps({})
-        return super().format(record)
+        formatted = super().format(record)
+        account_label = getattr(record, "account_label", None)
+        if account_label:
+            return f'| nick account: "{account_label}" {formatted}'
+        return formatted
 
 
 def setup_logging() -> None:
@@ -175,6 +179,18 @@ async def collect_posts(
 
     async def _collect_for_account(token: AccountToken) -> List[Dict[str, Any]]:
         cursor = sheets.get_last_processed_cursor(token.account_name)
+        logging.info(
+            "Начинаем загрузку постов для аккаунта",
+            extra={
+                "context": json.dumps(
+                    {
+                        "account": token.account_name,
+                        "has_saved_cursor": bool(cursor),
+                    }
+                ),
+                "account_label": token.account_name,
+            },
+        )
         try:
             result = await client.fetch_posts(token.token, after=cursor)
         except (httpx.HTTPStatusError, ThreadsAPIError) as exc:
@@ -182,7 +198,10 @@ async def collect_posts(
                 "Не удалось получить посты для аккаунта %s: %s",
                 token.account_name,
                 exc,
-                extra={"context": json.dumps({"account": token.account_name})},
+                extra={
+                    "context": json.dumps({"account": token.account_name}),
+                    "account_label": token.account_name,
+                },
             )
             return []
         posts_data = []
@@ -191,6 +210,19 @@ async def collect_posts(
             posts_data.append(post_data)
         if result.next_cursor:
             sheets.set_last_processed_cursor(token.account_name, result.next_cursor)
+        logging.info(
+            "Получены посты для аккаунта",
+            extra={
+                "context": json.dumps(
+                    {
+                        "account": token.account_name,
+                        "posts": len(posts_data),
+                        "has_next_cursor": bool(result.next_cursor),
+                    }
+                ),
+                "account_label": token.account_name,
+            },
+        )
         return posts_data
 
     semaphore = asyncio.Semaphore(client.concurrency_limit)
@@ -217,6 +249,15 @@ async def collect_insights(
     async def _fetch(
         post_id: str, token: str, account_name: str
     ) -> tuple[str, Dict[str, int], dt.datetime] | None:
+        logging.info(
+            "Запрашиваем инсайты для поста",
+            extra={
+                "context": json.dumps(
+                    {"post_id": post_id, "account_name": account_name}
+                ),
+                "account_label": account_name,
+            },
+        )
         try:
             insights = await client.fetch_post_insights(token, post_id)
         except Exception:
@@ -225,12 +266,22 @@ async def collect_insights(
                 extra={
                     "context": json.dumps(
                         {"post_id": post_id, "account_name": account_name}
-                    )
+                    ),
+                    "account_label": account_name,
                 },
             )
             return None
 
         fetched_at = dt.datetime.now(TIMEZONE)
+        logging.info(
+            "Инсайты успешно получены",
+            extra={
+                "context": json.dumps(
+                    {"post_id": post_id, "account_name": account_name}
+                ),
+                "account_label": account_name,
+            },
+        )
         return post_id, insights, fetched_at
 
     tasks: List[asyncio.Task[tuple[str, Dict[str, int], dt.datetime] | None]] = []
