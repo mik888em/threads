@@ -78,7 +78,8 @@ class GoogleSheetsClient:
             )
             raise
         tokens: List[AccountToken] = []
-        for row in records:
+        sanitized_rows: List[Dict[str, Any]] = []
+        for index, row in enumerate(records, start=2):
             normalized_row = {
                 "_".join(str(key).strip().lower().split()): value
                 for key, value in row.items()
@@ -89,8 +90,41 @@ class GoogleSheetsClient:
             account = self._get_first_present(
                 normalized_row, ("account", "name", "nickname")
             )
+            account_id = self._get_first_present(
+                normalized_row, ("id", "account_id", "user_id")
+            )
+            sanitized_info = {
+                "row": index,
+                "nickname": str(account) if account else None,
+                "has_id": bool(account_id),
+                "has_token": bool(token),
+            }
+            sanitized_rows.append(sanitized_info)
+            logging.info(
+                "Прочитана строка листа accounts_threads",
+                extra={
+                    "context": json.dumps(sanitized_info),
+                    "account_label": sanitized_info["nickname"],
+                },
+            )
             if token and account:
                 tokens.append(AccountToken(account_name=str(account), token=str(token)))
+        nicknames = [row["nickname"] for row in sanitized_rows if row["nickname"]]
+        logging.info(
+            "Сводка никнеймов из Google Sheets",
+            extra={
+                "context": json.dumps({
+                    "worksheet": worksheet,
+                    "total_rows": len(sanitized_rows),
+                    "nicknames": nicknames,
+                    "with_tokens": [
+                        row["nickname"]
+                        for row in sanitized_rows
+                        if row["nickname"] and row["has_token"]
+                    ],
+                })
+            },
+        )
         return tokens
 
     @staticmethod
