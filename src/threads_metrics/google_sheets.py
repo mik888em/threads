@@ -18,6 +18,8 @@ from .state_store import StateStore
 
 TIMEZONE = dt.timezone(dt.timedelta(hours=3), name="Europe/Athens")
 
+IGNORED_BACKGROUND_COLOR = "#9fc5e8"
+
 
 @dataclass(slots=True)
 class AccountToken:
@@ -77,6 +79,14 @@ class GoogleSheetsClient:
                 extra={"context": json.dumps({"worksheet": worksheet})},
             )
             raise
+        background_colors = self._get_column_background_colors(
+            sheet,
+            column="A",
+            start_row=2,
+            rows_count=len(records),
+            worksheet_name=worksheet,
+        )
+        ignored_color = IGNORED_BACKGROUND_COLOR.lower()
         tokens: List[AccountToken] = []
         sanitized_rows: List[Dict[str, Any]] = []
         for index, row in enumerate(records, start=2):
@@ -93,11 +103,13 @@ class GoogleSheetsClient:
             account_id = self._get_first_present(
                 normalized_row, ("id", "account_id", "user_id")
             )
+            background_color = background_colors.get(index)
             sanitized_info = {
                 "row": index,
                 "nickname": str(account) if account else None,
                 "has_id": bool(account_id),
                 "has_token": bool(token),
+                "background_color": background_color,
             }
             sanitized_rows.append(sanitized_info)
             logging.info(
@@ -107,9 +119,40 @@ class GoogleSheetsClient:
                     "account_label": sanitized_info["nickname"],
                 },
             )
+            if background_color and background_color.lower() == ignored_color:
+                logging.info(
+                    "Аккаунт пропущен из-за заливки в Google Sheets",
+                    extra={
+                        "context": json.dumps(
+                            {
+                                "row": index,
+                                "nickname": sanitized_info["nickname"],
+                                "background_color": background_color,
+                            }
+                        ),
+                        "account_label": sanitized_info["nickname"],
+                    },
+                )
+                continue
             if token and account:
                 tokens.append(AccountToken(account_name=str(account), token=str(token)))
         nicknames = [row["nickname"] for row in sanitized_rows if row["nickname"]]
+        ignored_accounts = [
+            row["nickname"]
+            for row in sanitized_rows
+            if row["nickname"]
+            and row.get("background_color")
+            and row["background_color"].lower() == ignored_color
+        ]
+        usable_accounts = [
+            row["nickname"]
+            for row in sanitized_rows
+            if row["nickname"]
+            and (
+                not row.get("background_color")
+                or row["background_color"].lower() != ignored_color
+            )
+        ]
         logging.info(
             "Сводка никнеймов из Google Sheets",
             extra={
@@ -122,6 +165,10 @@ class GoogleSheetsClient:
                         for row in sanitized_rows
                         if row["nickname"] and row["has_token"]
                     ],
+                    "ignored_due_to_color": ignored_accounts,
+                    "ignored_color_hex": IGNORED_BACKGROUND_COLOR,
+                    "usable_accounts": usable_accounts,
+                    "usable_accounts_count": len(usable_accounts),
                 })
             },
         )
@@ -134,6 +181,103 @@ class GoogleSheetsClient:
             if value:
                 return value
         return None
+
+    def _get_column_background_colors(
+        self,
+        sheet: Any,
+        *,
+        column: str,
+        start_row: int,
+        rows_count: int,
+        worksheet_name: str,
+    ) -> Dict[int, Optional[str]]:
+        if rows_count <= 0:
+            return {}
+        end_row = start_row + rows_count - 1
+        sheet_title = getattr(sheet, "title", worksheet_name)
+        range_label = f"'{sheet_title}'!{column}{start_row}:{column}{end_row}"
+        spreadsheet = getattr(sheet, "spreadsheet", None)
+        if not spreadsheet or not hasattr(spreadsheet, "fetch_sheet_metadata"):
+            return {}
+        try:
+            metadata = spreadsheet.fetch_sheet_metadata(
+                {
+                    "includeGridData": True,
+                    "ranges": [range_label],
+                    "fields": "sheets(data.rowData.values.userEnteredFormat.backgroundColor)",
+                }
+            )
+        except Exception:
+            logging.exception(
+                "Не удалось получить цвета ячеек Google Sheets",
+                extra={
+                    "context": json.dumps(
+                        {
+                            "sheet": sheet_title,
+                            "column": column,
+                            "start_row": start_row,
+                            "end_row": end_row,
+                        }
+                    )
+                },
+            )
+            return {}
+        sheet_data = next(
+            (
+                data
+                for data in metadata.get("sheets", [])
+                if data.get("properties", {}).get("sheetId") == sheet.id
+            ),
+            None,
+        )
+        if not sheet_data:
+            return {}
+        data_sections = sheet_data.get("data", [])
+        if not data_sections:
+            return {}
+        row_data = data_sections[0].get("rowData", [])
+        colors: Dict[int, Optional[str]] = {}
+        for offset, row in enumerate(row_data, start=start_row):
+            values = row.get("values", [])
+            color_dict: Optional[Dict[str, Any]] = None
+            if values:
+                color_dict = (
+                    values[0]
+                    .get("userEnteredFormat", {})
+                    .get("backgroundColor")
+                )
+            colors[offset] = self._convert_color_to_hex(color_dict)
+        return colors
+
+    @staticmethod
+    def _convert_color_to_hex(
+        color: Optional[Dict[str, Any]]
+    ) -> Optional[str]:
+        if not color:
+            return None
+
+        def normalize_component(value: Any) -> Optional[int]:
+            if value is None:
+                return None
+            try:
+                component = float(value)
+            except (TypeError, ValueError):
+                return None
+            if component < 0:
+                component = 0
+            if component > 1:
+                # Если значение уже в диапазоне 0-255.
+                if component > 255:
+                    component = 255
+                return int(round(component))
+            return int(round(component * 255))
+
+        red = normalize_component(color.get("red"))
+        green = normalize_component(color.get("green"))
+        blue = normalize_component(color.get("blue"))
+        if red is None or green is None or blue is None:
+            return None
+        return f"#{red:02x}{green:02x}{blue:02x}"
 
     def write_posts_metrics(
         self,
