@@ -204,7 +204,12 @@ class GoogleSheetsClient:
                 {
                     "includeGridData": True,
                     "ranges": [range_label],
-                    "fields": "sheets(data.rowData.values.userEnteredFormat.backgroundColor)",
+                    "fields": (
+                        "sheets(data.rowData.values("
+                        "userEnteredFormat(backgroundColor,backgroundColorStyle),"
+                        "effectiveFormat(backgroundColor,backgroundColorStyle)"
+                        "))"
+                    ),
                 }
             )
         except Exception:
@@ -241,13 +246,27 @@ class GoogleSheetsClient:
             values = row.get("values", [])
             color_dict: Optional[Dict[str, Any]] = None
             if values:
-                color_dict = (
-                    values[0]
-                    .get("userEnteredFormat", {})
-                    .get("backgroundColor")
-                )
+                first_value = values[0]
+                color_dict = self._extract_background_color(first_value)
             colors[offset] = self._convert_color_to_hex(color_dict)
         return colors
+
+    @staticmethod
+    def _extract_background_color(cell_value: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        effective_format = cell_value.get("effectiveFormat", {})
+        user_entered_format = cell_value.get("userEnteredFormat", {})
+
+        color_candidates = [
+            effective_format.get("backgroundColor"),
+            effective_format.get("backgroundColorStyle", {}).get("rgbColor"),
+            user_entered_format.get("backgroundColor"),
+            user_entered_format.get("backgroundColorStyle", {}).get("rgbColor"),
+        ]
+
+        for candidate in color_candidates:
+            if candidate:
+                return candidate
+        return None
 
     @staticmethod
     def _convert_color_to_hex(
