@@ -22,6 +22,17 @@ IGNORED_BACKGROUND_COLOR = "#9fc5e8"
 DEFAULT_BACKGROUND_COLOR = "#ffffff"
 NOT_DETERMINED_COLOR = "not determinate"
 
+DEFAULT_THEME_COLOR_HEX = {
+    "ACCENT1": "#4285f4",
+    "ACCENT2": "#ea4335",
+    "ACCENT3": "#fbbc04",
+    "ACCENT4": "#34a853",
+    "ACCENT5": "#46bdc6",
+    "ACCENT6": "#ab47bc",
+    "BACKGROUND": DEFAULT_BACKGROUND_COLOR,
+    "TEXT": "#000000",
+}
+
 
 @dataclass(slots=True)
 class AccountToken:
@@ -205,20 +216,12 @@ class GoogleSheetsClient:
         spreadsheet = getattr(sheet, "spreadsheet", None)
         if not spreadsheet or not hasattr(spreadsheet, "fetch_sheet_metadata"):
             return {}
+        request_payload = {
+            "includeGridData": True,
+            "ranges": [range_label],
+        }
         try:
-            metadata = spreadsheet.fetch_sheet_metadata(
-                {
-                    "includeGridData": True,
-                    "ranges": [range_label],
-                    "fields": (
-                        "sheets(data.rowData.values("
-                        "userEnteredFormat(backgroundColor,backgroundColorStyle),"
-                        "effectiveFormat(backgroundColor,backgroundColorStyle)"
-                        ")),"
-                        "spreadsheetTheme(themeColors(colorType,color))"
-                    ),
-                }
-            )
+            metadata = spreadsheet.fetch_sheet_metadata(request_payload)
         except Exception:
             logging.exception(
                 "Не удалось получить цвета ячеек Google Sheets",
@@ -234,20 +237,10 @@ class GoogleSheetsClient:
                 },
             )
             return {}
-        sheet_data = next(
-            (
-                data
-                for data in metadata.get("sheets", [])
-                if data.get("properties", {}).get("sheetId") == sheet.id
-            ),
-            None,
-        )
+        sheet_data = self._extract_sheet_data(metadata, sheet.id)
         if not sheet_data:
             return {}
-        data_sections = sheet_data.get("data", [])
-        if not data_sections:
-            return {}
-        row_data = data_sections[0].get("rowData", [])
+        row_data = self._collect_row_data(sheet_data)
         theme_palette = self._build_theme_palette(metadata.get("spreadsheetTheme", {}))
         colors: Dict[int, str] = {}
         for offset, row in enumerate(row_data, start=start_row):
@@ -268,6 +261,23 @@ class GoogleSheetsClient:
         return colors
 
     @staticmethod
+    def _collect_row_data(sheet_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        collected: List[Dict[str, Any]] = []
+        for section in sheet_data.get("data", []) or []:
+            for row in section.get("rowData", []) or []:
+                collected.append(row)
+        return collected
+
+    @staticmethod
+    def _extract_sheet_data(
+        metadata: Dict[str, Any], sheet_id: int
+    ) -> Optional[Dict[str, Any]]:
+        for data in metadata.get("sheets", []) or []:
+            if data.get("properties", {}).get("sheetId") == sheet_id:
+                return data
+        return None
+
+    @staticmethod
     def _build_theme_palette(
         spreadsheet_theme: Dict[str, Any],
     ) -> Dict[str, Dict[str, Any]]:
@@ -278,6 +288,11 @@ class GoogleSheetsClient:
             rgb_color = color_style.get("rgbColor")
             if color_type and rgb_color:
                 palette[color_type] = rgb_color
+        for color_type, hex_color in DEFAULT_THEME_COLOR_HEX.items():
+            if color_type not in palette:
+                converted = GoogleSheetsClient._hex_to_color_dict(hex_color)
+                if converted:
+                    palette[color_type] = converted
         return palette
 
     def _resolve_background_color(
@@ -321,9 +336,47 @@ class GoogleSheetsClient:
         theme_color = candidate.get("themeColor")
         if theme_color:
             palette_color = theme_palette.get(theme_color)
+            if not palette_color:
+                palette_color = GoogleSheetsClient._hex_to_color_dict(
+                    DEFAULT_THEME_COLOR_HEX.get(theme_color, "")
+                )
             if palette_color:
-                return self._convert_color_to_hex(palette_color)
+                tinted = GoogleSheetsClient._apply_tint_to_color(
+                    palette_color, candidate.get("tint")
+                )
+                return self._convert_color_to_hex(tinted)
         return None
+
+    @staticmethod
+    def _hex_to_color_dict(hex_color: str) -> Dict[str, float]:
+        hex_value = hex_color.lstrip("#")
+        if len(hex_value) != 6:
+            return {}
+        red = int(hex_value[0:2], 16) / 255
+        green = int(hex_value[2:4], 16) / 255
+        blue = int(hex_value[4:6], 16) / 255
+        return {"red": red, "green": green, "blue": blue}
+
+    @staticmethod
+    def _apply_tint_to_color(
+        base_color: Dict[str, Any], tint: Optional[float]
+    ) -> Dict[str, Any]:
+        if tint is None:
+            return dict(base_color)
+
+        def clamp(value: float) -> float:
+            return max(0.0, min(1.0, value))
+
+        adjusted: Dict[str, float] = {}
+        for channel in ("red", "green", "blue"):
+            component = float(base_color.get(channel, 0.0))
+            component = clamp(component)
+            if tint >= 0:
+                component = component + (1.0 - component) * min(tint, 1.0)
+            else:
+                component = component * (1.0 + max(tint, -1.0))
+            adjusted[channel] = clamp(component)
+        return adjusted
 
     @staticmethod
     def _convert_color_to_hex(color: Optional[Dict[str, Any]]) -> Optional[str]:
