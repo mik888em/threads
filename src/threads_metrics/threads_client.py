@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -11,6 +12,16 @@ import httpx
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_random_exponential
 
 logger = logging.getLogger(__name__)
+
+
+INSIGHTS_METRICS: tuple[str, ...] = (
+    "views",
+    "likes",
+    "replies",
+    "reposts",
+    "quotes",
+    "shares",
+)
 
 
 class ThreadsAPIError(RuntimeError):
@@ -77,7 +88,9 @@ class ThreadsClient:
 
         return self._concurrency_limit
 
-    async def fetch_posts(self, access_token: str, after: Optional[str] = None) -> ThreadsFetchResult:
+    async def fetch_posts(
+        self, access_token: str, after: Optional[str] = None, *, account_name: Optional[str] = None
+    ) -> ThreadsFetchResult:
         """Загружает все посты для указанного токена доступа.
 
         Args:
@@ -97,7 +110,10 @@ class ThreadsClient:
         while True:
             async with self._semaphore:
                 response_data = await self._request(
-                    self._posts_path, access_token=access_token, params=params
+                    self._posts_path,
+                    access_token=access_token,
+                    params=params,
+                    account_name=account_name,
                 )
             data = response_data.get("data", [])
             for item in data:
@@ -125,7 +141,14 @@ class ThreadsClient:
             cursor = posts[-1].id
         return ThreadsFetchResult(posts=posts, next_cursor=cursor)
 
-    async def _request(self, path: str, *, access_token: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def _request(
+        self,
+        path: str,
+        *,
+        access_token: str,
+        params: Optional[Dict[str, Any]] = None,
+        account_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
         headers = {"Authorization": f"Bearer {access_token}"}
 
         async for attempt in AsyncRetrying(
@@ -137,17 +160,44 @@ class ThreadsClient:
             with attempt:
                 url_path = self._build_url_path(path)
                 response = await self._client.get(url_path, params=params, headers=headers)
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    attempt_number = attempt.retry_state.attempt_number
+                    response_text = exc.response.text if exc.response else ""
+                    context = {
+                        "url": str(exc.request.url) if exc.request else None,
+                        "status_code": exc.response.status_code if exc.response else None,
+                        "response_text": response_text,
+                        "attempt": attempt_number,
+                        "account_name": account_name,
+                    }
+                    logger.error(
+                        "Ответ Threads API со статусом %s",
+                        exc.response.status_code if exc.response else "unknown",
+                        extra={
+                            "context": json.dumps(context, ensure_ascii=False),
+                            "account_label": account_name,
+                        },
+                    )
+                    raise
                 return response.json()
         raise ThreadsAPIError("Не удалось получить ответ от Threads API")
 
-    async def fetch_post_insights(self, access_token: str, post_id: str) -> Dict[str, int]:
+    async def fetch_post_insights(
+        self, access_token: str, post_id: str, *, account_name: Optional[str] = None
+    ) -> Dict[str, int]:
         """Возвращает метрики Insights для указанного поста."""
 
-        metrics = ("views", "likes", "replies", "reposts", "quotes", "shares")
+        metrics = INSIGHTS_METRICS
         params = {"metric": ",".join(metrics)}
         async with self._semaphore:
-            data = await self._request(f"/{post_id}/insights", access_token=access_token, params=params)
+            data = await self._request(
+                f"/{post_id}/insights",
+                access_token=access_token,
+                params=params,
+                account_name=account_name,
+            )
 
         insights: Dict[str, int] = {metric: 0 for metric in metrics}
         for item in data.get("data", []):
@@ -172,6 +222,13 @@ class ThreadsClient:
         if self._api_prefix and not path.startswith(self._api_prefix):
             return f"{self._api_prefix}{path}"
         return path
+
+    def build_absolute_url(self, path: str, params: Optional[Dict[str, Any]] = None) -> str:
+        """Строит абсолютный URL запроса."""
+
+        relative = self._build_url_path(path)
+        request = self._client.build_request("GET", relative, params=params)
+        return str(request.url)
 
     def _configure_posts_override(self, posts_url_override: Optional[str]) -> None:
         if not posts_url_override:

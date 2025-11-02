@@ -8,8 +8,10 @@ import datetime as dt
 import json
 import logging
 import os
+import random
 import signal
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping
 
 import httpx
@@ -19,7 +21,23 @@ from .config import Config, ConfigError
 from .google_sheets import AccountToken, GoogleSheetsClient
 from .gh_cancel import DEFAULT_INTERVAL_SECONDS, cancel_pending_workflow_runs
 from .state_store import StateStore, TIMEZONE
-from .threads_client import ThreadsClient, ThreadsAPIError
+from .threads_client import ThreadsClient, ThreadsAPIError, INSIGHTS_METRICS
+
+
+@dataclass(frozen=True)
+class RetrySettings:
+    """Настройки повторных запросов Insights."""
+
+    max_attempts: int = 3
+    pause_range: tuple[float, float] = (20.0, 30.0)
+
+    def normalized_pause_range(self) -> tuple[float, float]:
+        """Возвращает отсортированные границы паузы."""
+
+        start, end = self.pause_range
+        if end < start:
+            return end, start
+        return start, end
 
 HEARTBEAT_INTERVAL = 30
 
@@ -192,7 +210,9 @@ async def collect_posts(
             },
         )
         try:
-            result = await client.fetch_posts(token.token, after=cursor)
+            result = await client.fetch_posts(
+                token.token, after=cursor, account_name=token.account_name
+            )
         except (httpx.HTTPStatusError, ThreadsAPIError) as exc:
             logging.warning(
                 "Не удалось получить посты для аккаунта %s: %s",
@@ -243,8 +263,12 @@ async def collect_insights(
     client: ThreadsClient,
     state_store: StateStore,
     ttl_minutes: int,
+    retry_settings: RetrySettings | None = None,
 ) -> Dict[str, Dict[str, int]]:
     """Параллельно собирает Insights для постов."""
+
+    retry_settings = retry_settings or RetrySettings()
+    failed_requests: List[tuple[str, str, str]] = []
 
     async def _fetch(
         post_id: str, token: str, account_name: str
@@ -259,7 +283,9 @@ async def collect_insights(
             },
         )
         try:
-            insights = await client.fetch_post_insights(token, post_id)
+            insights = await client.fetch_post_insights(
+                token, post_id, account_name=account_name
+            )
         except Exception:
             logging.exception(
                 "Не удалось получить инсайты для поста",
@@ -270,6 +296,7 @@ async def collect_insights(
                     "account_label": account_name,
                 },
             )
+            failed_requests.append((post_id, token, account_name))
             return None
 
         fetched_at = dt.datetime.now(TIMEZONE)
@@ -312,9 +339,177 @@ async def collect_insights(
         insights_map[post_id] = insights
         updates[post_id] = fetched_at
 
+    if failed_requests:
+        extra_insights, extra_updates = await retry_failed_insights(
+            failed_requests, client, retry_settings
+        )
+        insights_map.update(extra_insights)
+        updates.update(extra_updates)
+
     if updates:
         state_store.update_post_metrics_many(updates)
     return insights_map
+
+
+async def retry_failed_insights(
+    failed_requests: List[tuple[str, str, str]],
+    client: ThreadsClient,
+    retry_settings: RetrySettings,
+) -> tuple[Dict[str, Dict[str, int]], Dict[str, dt.datetime]]:
+    """Выполняет дополнительные попытки запросов Insights."""
+
+    if not failed_requests:
+        return {}, {}
+
+    logging.info(
+        "================ Повторные попытки запросов Insights ================",
+        extra={
+            "context": json.dumps(
+                {
+                    "count": len(failed_requests),
+                    "post_ids": [post_id for post_id, _, _ in failed_requests],
+                }
+            ),
+        },
+    )
+
+    async def _retry_single(
+        post_id: str, token: str, account_name: str
+    ) -> tuple[str, Dict[str, int], dt.datetime] | None:
+        max_attempts = max(1, retry_settings.max_attempts)
+        params = {"metric": ",".join(INSIGHTS_METRICS)}
+        url = client.build_absolute_url(f"/{post_id}/insights", params=params)
+
+        logging.info(
+            "Запускаем повторные попытки запроса",
+            extra={
+                "context": json.dumps(
+                    {"post_id": post_id, "account_name": account_name, "url": url}
+                ),
+                "account_label": account_name,
+            },
+        )
+
+        pause_start, pause_end = retry_settings.normalized_pause_range()
+
+        for attempt in range(1, max_attempts + 1):
+            if attempt > 1:
+                pause = random.uniform(pause_start, pause_end)
+                logging.info(
+                    "Пауза перед повторной попыткой %.2f секунд",
+                    pause,
+                    extra={
+                        "context": json.dumps(
+                            {
+                                "post_id": post_id,
+                                "account_name": account_name,
+                                "attempt": attempt,
+                                "max_attempts": max_attempts,
+                                "url": url,
+                                "pause": pause,
+                            }
+                        ),
+                        "account_label": account_name,
+                    },
+                )
+                await asyncio.sleep(pause)
+
+            logging.info(
+                "Дополнительная попытка %d из %d",
+                attempt,
+                max_attempts,
+                extra={
+                    "context": json.dumps(
+                        {
+                            "post_id": post_id,
+                            "account_name": account_name,
+                            "attempt": attempt,
+                            "max_attempts": max_attempts,
+                            "url": url,
+                        }
+                    ),
+                    "account_label": account_name,
+                },
+            )
+
+            try:
+                insights = await client.fetch_post_insights(
+                    token, post_id, account_name=account_name
+                )
+            except Exception as exc:
+                logging.warning(
+                    "Дополнительная попытка %d из %d завершилась ошибкой: %s",
+                    attempt,
+                    max_attempts,
+                    exc,
+                    extra={
+                        "context": json.dumps(
+                            {
+                                "post_id": post_id,
+                                "account_name": account_name,
+                                "attempt": attempt,
+                                "max_attempts": max_attempts,
+                                "url": url,
+                            }
+                        ),
+                        "account_label": account_name,
+                    },
+                )
+                if attempt == max_attempts:
+                    logging.error(
+                        "Инсайты не получены после %d дополнительных попыток",
+                        max_attempts,
+                        extra={
+                            "context": json.dumps(
+                                {
+                                    "post_id": post_id,
+                                    "account_name": account_name,
+                                    "attempt": attempt,
+                                    "max_attempts": max_attempts,
+                                    "url": url,
+                                }
+                            ),
+                            "account_label": account_name,
+                        },
+                    )
+                continue
+
+            fetched_at = dt.datetime.now(TIMEZONE)
+            logging.info(
+                "Инсайты получены на дополнительной попытке",
+                extra={
+                    "context": json.dumps(
+                        {
+                            "post_id": post_id,
+                            "account_name": account_name,
+                            "attempt": attempt,
+                            "max_attempts": max_attempts,
+                            "url": url,
+                        }
+                    ),
+                    "account_label": account_name,
+                },
+            )
+            return post_id, insights, fetched_at
+
+        return None
+
+    tasks = [
+        asyncio.create_task(_retry_single(post_id, token, account_name))
+        for post_id, token, account_name in failed_requests
+    ]
+    results = await asyncio.gather(*tasks)
+
+    insights_map: Dict[str, Dict[str, int]] = {}
+    updates: Dict[str, dt.datetime] = {}
+    for item in results:
+        if not item:
+            continue
+        post_id, insights, fetched_at = item
+        insights_map[post_id] = insights
+        updates[post_id] = fetched_at
+
+    return insights_map, updates
 
 
 async def heartbeat() -> None:

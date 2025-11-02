@@ -85,7 +85,9 @@ class _StubClient:
     responses: Dict[str, object]
     concurrency_limit: int = 2
 
-    async def fetch_posts(self, token: str, after: Optional[str] = None) -> ThreadsFetchResult:
+    async def fetch_posts(
+        self, token: str, after: Optional[str] = None, *, account_name: Optional[str] = None
+    ) -> ThreadsFetchResult:
         result = self.responses[token]
         if isinstance(result, Exception):
             raise result
