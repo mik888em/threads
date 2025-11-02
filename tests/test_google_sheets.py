@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import sys
 import types
 from dataclasses import dataclass
+from typing import Any, Dict
 
 import pytest
 
@@ -52,7 +55,11 @@ if "google.oauth2.service_account" not in sys.modules:
     sys.modules["google.oauth2.service_account"] = service_account_module
 
 from src.threads_metrics.constants import PUBLISH_TIME_COLUMN
-from src.threads_metrics.google_sheets import AccountToken, GoogleSheetsClient
+from src.threads_metrics.google_sheets import (
+    AccountToken,
+    GoogleSheetsClient,
+    NOT_DETERMINED_COLOR,
+)
 
 
 @dataclass
@@ -68,21 +75,33 @@ class DummyStateStore:
 class DummySpreadsheetBackend:
     """Заглушка API Google Sheets для batch_update."""
 
-    def __init__(self) -> None:
+    def __init__(self, metadata: dict[str, object] | None = None) -> None:
         self.requests: list[dict[str, object]] = []
+        self._metadata = metadata or {}
+        self.metadata_requests: list[dict[str, object]] = []
 
     def batch_update(self, payload: dict[str, object]) -> None:
         self.requests.append(payload)
+
+    def fetch_sheet_metadata(self, payload: dict[str, object]) -> dict[str, object]:
+        self.metadata_requests.append(payload)
+        return self._metadata
 
 
 class DummyWorksheet:
     """Заглушка листа Google Sheets для проверки операций."""
 
-    def __init__(self, records: list[dict[str, object]], *, sheet_id: int = 1) -> None:
+    def __init__(
+        self,
+        records: list[dict[str, object]],
+        *,
+        sheet_id: int = 1,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
         self.id = sheet_id
         self.cleared = False
         self.formats: list[tuple[str, dict[str, str]]] = []
-        self._backend = DummySpreadsheetBackend()
+        self._backend = DummySpreadsheetBackend(metadata)
         self.batch_update_calls: list[list[dict[str, object]]] = []
         self._grid: list[list[str]] = []
         if records:
@@ -201,6 +220,37 @@ class DummyCredentials:
     """Заглушка учётных данных Google."""
 
 
+def _make_accounts_client(
+    monkeypatch: pytest.MonkeyPatch,
+    records: list[dict[str, object]],
+    metadata: dict[str, object] | None = None,
+) -> tuple[GoogleSheetsClient, DummyWorksheet]:
+    worksheet = DummyWorksheet(records, metadata=metadata, sheet_id=1)
+    worksheets = {"accounts_threads": worksheet}
+
+    monkeypatch.setattr(
+        "src.threads_metrics.google_sheets.gspread.authorize",
+        lambda credentials: DummyClient(worksheets),
+    )
+    monkeypatch.setattr(
+        "src.threads_metrics.google_sheets.Credentials.from_service_account_info",
+        lambda info, scopes: DummyCredentials(),
+    )
+
+    client = GoogleSheetsClient(
+        table_id="test-table", service_account_info={}, state_store=DummyStateStore()
+    )
+    return client, worksheet
+
+
+def _extract_background_from_log(caplog: pytest.LogCaptureFixture) -> str:
+    for record in caplog.records:
+        if record.msg == "Прочитана строка листа accounts_threads":
+            payload = json.loads(record.context)
+            return payload["background_color"]
+    raise AssertionError("Не найден лог о чтении строки accounts_threads")
+
+
 def test_read_account_tokens_supports_bearer_headers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -223,6 +273,160 @@ def test_read_account_tokens_supports_bearer_headers(
     tokens = client.read_account_tokens()
 
     assert tokens == [AccountToken(account_name="Account", token="token-value")]
+
+
+def test_read_account_tokens_logs_theme_color_from_metadata(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    records = [{"nickname": "acc", "token": "value"}]
+    metadata = {
+        "spreadsheetTheme": {
+            "themeColors": [
+                {
+                    "colorType": "ACCENT1",
+                    "color": {
+                        "rgbColor": {
+                            "red": 159 / 255,
+                            "green": 197 / 255,
+                            "blue": 232 / 255,
+                        }
+                    },
+                }
+            ]
+        },
+        "sheets": [
+            {
+                "properties": {"sheetId": 1},
+                "data": [
+                    {
+                        "rowData": [
+                            {
+                                "values": [
+                                    {
+                                        "effectiveFormat": {
+                                            "backgroundColorStyle": {
+                                                "themeColor": "ACCENT1"
+                                            }
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ],
+            }
+        ],
+    }
+
+    client, _ = _make_accounts_client(monkeypatch, records, metadata)
+    caplog.set_level(logging.INFO)
+
+    client.read_account_tokens()
+
+    assert _extract_background_from_log(caplog) == "#9fc5e8"
+
+
+
+def test_read_account_tokens_uses_default_theme_with_tint(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    records = [{"nickname": "acc", "token": "value"}]
+    metadata = {
+        "sheets": [
+            {
+                "properties": {"sheetId": 1},
+                "data": [
+                    {
+                        "rowData": [
+                            {
+                                "values": [
+                                    {
+                                        "effectiveFormat": {
+                                            "backgroundColorStyle": {
+                                                "themeColor": "ACCENT4",
+                                                "tint": 0.25,
+                                            }
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ],
+            }
+        ],
+    }
+
+    client, _ = _make_accounts_client(monkeypatch, records, metadata)
+    caplog.set_level(logging.INFO)
+
+    client.read_account_tokens()
+
+    assert _extract_background_from_log(caplog) == "#67be7e"
+
+
+
+def test_read_account_tokens_marks_unknown_theme(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    records = [{"nickname": "acc", "token": "value"}]
+    metadata = {
+        "sheets": [
+            {
+                "properties": {"sheetId": 1},
+                "data": [
+                    {
+                        "rowData": [
+                            {
+                                "values": [
+                                    {
+                                        "userEnteredFormat": {
+                                            "backgroundColorStyle": {
+                                                "themeColor": "UNMAPPED"
+                                            }
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ],
+            }
+        ],
+    }
+
+    client, _ = _make_accounts_client(monkeypatch, records, metadata)
+    caplog.set_level(logging.INFO)
+
+    client.read_account_tokens()
+
+    assert _extract_background_from_log(caplog) == NOT_DETERMINED_COLOR
+
+
+
+def test_read_account_tokens_defaults_to_white(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    records = [{"nickname": "acc", "token": "value"}]
+    metadata = {
+        "sheets": [
+            {
+                "properties": {"sheetId": 1},
+                "data": [
+                    {
+                        "rowData": [
+                            {
+                                "values": [{}]
+                            }
+                        ]
+                    }
+                ],
+            }
+        ],
+    }
+
+    client, _ = _make_accounts_client(monkeypatch, records, metadata)
+    caplog.set_level(logging.INFO)
+
+    client.read_account_tokens()
+
+    assert _extract_background_from_log(caplog) == "#ffffff"
 
 
 def test_write_posts_metrics_updates_existing_rows_and_formats(
