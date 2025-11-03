@@ -275,6 +275,47 @@ def test_read_account_tokens_supports_bearer_headers(
     assert tokens == [AccountToken(account_name="Account", token="token-value")]
 
 
+def test_get_worksheet_retries_service_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    records = [{"nickname": "acc", "token": "value"}]
+    client, _ = _make_accounts_client(monkeypatch, records)
+
+    waits: list[float] = []
+
+    def fake_sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    monkeypatch.setattr(
+        "src.threads_metrics.google_sheets.time.sleep",
+        fake_sleep,
+    )
+
+    original_open = client._client.open_by_key
+    call_count = {"value": 0}
+
+    import requests
+    from gspread.exceptions import APIError
+
+    def flaky_open(table_id: str):  # type: ignore[override]
+        call_count["value"] += 1
+        if call_count["value"] == 1:
+            response = requests.Response()
+            response.status_code = 503
+            response._content = b'{"error":{"code":503,"status":"UNAVAILABLE"}}'
+            response.url = "https://example.com"
+            raise APIError(response)
+        return original_open(table_id)
+
+    monkeypatch.setattr(client._client, "open_by_key", flaky_open)
+
+    tokens = client.read_account_tokens()
+
+    assert tokens == [AccountToken(account_name="acc", token="value")]
+    assert waits == [2.0]
+    assert call_count["value"] == 2
+
+
 def test_read_account_tokens_logs_theme_color_from_metadata(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

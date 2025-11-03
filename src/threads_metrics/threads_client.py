@@ -4,12 +4,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 import httpx
-from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_random_exponential
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,13 @@ class ThreadsFetchResult:
 class ThreadsClient:
     """Клиент для обращения к Threads Graph API."""
 
+    _MAX_ATTEMPTS = 5
+    _DEFAULT_INITIAL_BACKOFF_SECONDS = 5.0
+    _DEFAULT_BACKOFF_MULTIPLIER = 3.0
+    _RATE_LIMIT_INITIAL_BACKOFF_SECONDS = 10.0
+    _RATE_LIMIT_BACKOFF_MULTIPLIER = 2.0
+    _RATE_LIMIT_ERROR_FRAGMENT = "There have been too many calls for this Threads profile"
+
     def __init__(
         self,
         base_url: str,
@@ -76,6 +83,7 @@ class ThreadsClient:
             "fields": "id,permalink,text,timestamp,media_type,media_url,like_count,repost_count,reply_count",
         }
         self._configure_posts_override(posts_url_override)
+        self._account_cooldowns: Dict[str, float] = {}
 
     async def close(self) -> None:
         """Закрывает клиент."""
@@ -150,39 +158,232 @@ class ThreadsClient:
         account_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         headers = {"Authorization": f"Bearer {access_token}"}
+        last_exception: Optional[Exception] = None
 
-        async for attempt in AsyncRetrying(
-            stop=stop_after_attempt(5),
-            wait=wait_random_exponential(multiplier=1, max=30),
-            retry=retry_if_exception_type(httpx.HTTPError),
-            reraise=True,
-        ):
-            with attempt:
-                url_path = self._build_url_path(path)
+        for attempt in range(1, self._MAX_ATTEMPTS + 1):
+            await self._respect_account_cooldown(account_name)
+            url_path = self._build_url_path(path)
+            try:
                 response = await self._client.get(url_path, params=params, headers=headers)
-                try:
-                    response.raise_for_status()
-                except httpx.HTTPStatusError as exc:
-                    attempt_number = attempt.retry_state.attempt_number
-                    response_text = exc.response.text if exc.response else ""
-                    context = {
-                        "url": str(exc.request.url) if exc.request else None,
-                        "status_code": exc.response.status_code if exc.response else None,
-                        "response_text": response_text,
-                        "attempt": attempt_number,
-                        "account_name": account_name,
-                    }
-                    logger.error(
-                        "Ответ Threads API со статусом %s",
-                        exc.response.status_code if exc.response else "unknown",
-                        extra={
-                            "context": json.dumps(context, ensure_ascii=False),
-                            "account_label": account_name,
-                        },
-                    )
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                last_exception = exc
+                response_text = exc.response.text if exc.response else ""
+                status_code = exc.response.status_code if exc.response else None
+                context = {
+                    "url": str(exc.request.url) if exc.request else None,
+                    "status_code": status_code,
+                    "response_text": response_text,
+                    "attempt": attempt,
+                    "account_name": account_name,
+                }
+                logger.error(
+                    "Ответ Threads API со статусом %s",
+                    status_code if status_code is not None else "unknown",
+                    extra={
+                        "context": json.dumps(context, ensure_ascii=False),
+                        "account_label": account_name,
+                    },
+                )
+                if attempt >= self._MAX_ATTEMPTS:
                     raise
-                return response.json()
-        raise ThreadsAPIError("Не удалось получить ответ от Threads API")
+                wait_seconds, reason, source = self._resolve_wait_for_status_error(
+                    attempt, exc
+                )
+                self._schedule_account_cooldown(account_name, wait_seconds)
+                await self._sleep_with_logging(
+                    wait_seconds,
+                    account_name,
+                    next_attempt=attempt + 1,
+                    reason=reason,
+                    source=source,
+                    status_code=status_code,
+                )
+                continue
+            except httpx.HTTPError as exc:
+                last_exception = exc
+                context = {
+                    "url": str(getattr(exc, "request", {}).url)
+                    if getattr(exc, "request", None)
+                    else None,
+                    "attempt": attempt,
+                    "account_name": account_name,
+                }
+                logger.error(
+                    "Ошибка HTTP при обращении к Threads API",
+                    extra={
+                        "context": json.dumps(context, ensure_ascii=False),
+                        "account_label": account_name,
+                    },
+                )
+                if attempt >= self._MAX_ATTEMPTS:
+                    raise
+                wait_seconds = self._compute_default_wait(attempt)
+                self._schedule_account_cooldown(account_name, wait_seconds)
+                await self._sleep_with_logging(
+                    wait_seconds,
+                    account_name,
+                    next_attempt=attempt + 1,
+                    reason="http_error",
+                    source="static_backoff",
+                    status_code=None,
+                )
+                continue
+
+            self._clear_account_cooldown(account_name)
+            return response.json()
+
+        raise ThreadsAPIError("Не удалось получить ответ от Threads API") from last_exception
+
+    async def _respect_account_cooldown(self, account_name: Optional[str]) -> None:
+        if not account_name:
+            return
+        wait_until = self._account_cooldowns.get(account_name)
+        if wait_until is None:
+            return
+        now = self._current_time()
+        if wait_until <= now:
+            self._account_cooldowns.pop(account_name, None)
+            return
+        wait_seconds = wait_until - now
+        await self._sleep_with_logging(
+            wait_seconds,
+            account_name,
+            next_attempt=None,
+            reason="account_cooldown",
+            source="scheduled",
+            status_code=None,
+        )
+
+    def _clear_account_cooldown(self, account_name: Optional[str]) -> None:
+        if account_name and account_name in self._account_cooldowns:
+            self._account_cooldowns.pop(account_name, None)
+
+    def _schedule_account_cooldown(self, account_name: Optional[str], wait_seconds: float) -> None:
+        if not account_name:
+            return
+        if wait_seconds <= 0:
+            self._account_cooldowns.pop(account_name, None)
+            return
+        self._account_cooldowns[account_name] = self._current_time() + wait_seconds
+
+    async def _sleep_with_logging(
+        self,
+        wait_seconds: float,
+        account_name: Optional[str],
+        *,
+        next_attempt: Optional[int],
+        reason: str,
+        source: str,
+        status_code: Optional[int],
+    ) -> None:
+        wait_seconds = max(wait_seconds, 0.0)
+        if wait_seconds <= 0:
+            return
+        wait_milliseconds = int(wait_seconds * 1000)
+        context = {
+            "account_name": account_name,
+            "wait_seconds": wait_seconds,
+            "wait_milliseconds": wait_milliseconds,
+            "next_attempt": next_attempt,
+            "reason": reason,
+            "source": source,
+            "status_code": status_code,
+        }
+        logger.info(
+            "Ожидание перед повторной попыткой запроса",
+            extra={
+                "context": json.dumps(context, ensure_ascii=False),
+                "account_label": account_name,
+            },
+        )
+        await asyncio.sleep(wait_seconds)
+
+    def _resolve_wait_for_status_error(
+        self, attempt: int, exc: httpx.HTTPStatusError
+    ) -> Tuple[float, str, str]:
+        response = exc.response
+        if response is not None and response.status_code == 403:
+            response_text = response.text or ""
+            if self._RATE_LIMIT_ERROR_FRAGMENT in response_text:
+                header_wait, header_source = self._extract_rate_limit_wait(response.headers)
+                if header_wait is not None:
+                    return header_wait, "threads_profile_rate_limit", header_source
+                fallback = self._compute_rate_limit_wait(attempt)
+                return fallback, "threads_profile_rate_limit", "fallback_backoff"
+        default_wait = self._compute_default_wait(attempt)
+        return default_wait, "http_status", "static_backoff"
+
+    def _extract_rate_limit_wait(self, headers: httpx.Headers) -> Tuple[Optional[float], str]:
+        retry_after = headers.get("Retry-After")
+        if retry_after:
+            wait_seconds = self._parse_retry_after(retry_after)
+            if wait_seconds is not None:
+                return wait_seconds, "retry_after"
+        business_usage = headers.get("X-Business-Use-Case-Usage")
+        if business_usage:
+            wait_seconds = self._parse_usage_header(business_usage)
+            if wait_seconds is not None:
+                return wait_seconds, "business_use_case"
+        return None, "unknown"
+
+    @staticmethod
+    def _parse_retry_after(raw_value: str) -> Optional[float]:
+        raw_value = raw_value.strip()
+        if not raw_value:
+            return None
+        try:
+            return max(float(raw_value), 0.0)
+        except ValueError:
+            return None
+
+    def _parse_usage_header(self, raw_value: str) -> Optional[float]:
+        try:
+            payload = json.loads(raw_value)
+        except json.JSONDecodeError:
+            return None
+        estimated = self._find_estimated_time(payload)
+        if estimated is None:
+            return None
+        try:
+            return max(float(estimated), 0.0)
+        except (TypeError, ValueError):
+            return None
+
+    def _find_estimated_time(self, data: Any) -> Optional[float]:
+        if isinstance(data, dict):
+            if "estimated_time_to_regain_access" in data:
+                return data.get("estimated_time_to_regain_access")
+            for value in data.values():
+                nested = self._find_estimated_time(value)
+                if nested is not None:
+                    return nested
+        elif isinstance(data, list):
+            for item in data:
+                nested = self._find_estimated_time(item)
+                if nested is not None:
+                    return nested
+        return None
+
+    def _compute_default_wait(self, attempt: int) -> float:
+        exponent = max(attempt - 1, 0)
+        return self._DEFAULT_INITIAL_BACKOFF_SECONDS * (
+            self._DEFAULT_BACKOFF_MULTIPLIER ** exponent
+        )
+
+    def _compute_rate_limit_wait(self, attempt: int) -> float:
+        exponent = max(attempt - 1, 0)
+        return self._RATE_LIMIT_INITIAL_BACKOFF_SECONDS * (
+            self._RATE_LIMIT_BACKOFF_MULTIPLIER ** exponent
+        )
+
+    @staticmethod
+    def _current_time() -> float:
+        try:
+            loop = asyncio.get_running_loop()
+            return loop.time()
+        except RuntimeError:
+            return time.monotonic()
 
     async def fetch_post_insights(
         self, access_token: str, post_id: str, *, account_name: Optional[str] = None

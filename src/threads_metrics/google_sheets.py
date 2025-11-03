@@ -5,12 +5,14 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 
 import gspread
 import pandas as pd
 from google.oauth2.service_account import Credentials
+from gspread.exceptions import APIError
 from gspread.utils import rowcol_to_a1
 
 from .constants import PUBLISH_TIME_COLUMN
@@ -44,6 +46,10 @@ class AccountToken:
 
 class GoogleSheetsClient:
     """Обёртка для доступа к Google Sheets."""
+
+    _SHEETS_MAX_ATTEMPTS = 5
+    _SHEETS_INITIAL_WAIT_SECONDS = 2.0
+    _SHEETS_BACKOFF_MULTIPLIER = 2.0
 
     def __init__(
         self,
@@ -485,15 +491,59 @@ class GoogleSheetsClient:
             raise
 
     def _get_worksheet(self, worksheet: str) -> Any:
-        try:
-            spreadsheet = self._client.open_by_key(self._table_id)
-            return spreadsheet.worksheet(worksheet)
-        except Exception:
-            logging.exception(
-                "Не удалось получить лист Google Sheets",
-                extra={"context": json.dumps({"worksheet": worksheet})},
-            )
-            raise
+        for attempt in range(1, self._SHEETS_MAX_ATTEMPTS + 1):
+            try:
+                spreadsheet = self._client.open_by_key(self._table_id)
+                return spreadsheet.worksheet(worksheet)
+            except Exception as error:
+                if self._should_retry_sheets_error(error) and attempt < self._SHEETS_MAX_ATTEMPTS:
+                    wait_seconds = self._compute_sheets_wait(attempt)
+                    wait_milliseconds = int(wait_seconds * 1000)
+                    logging.warning(
+                        "Повторное обращение к Google Sheets из-за временной ошибки",
+                        extra={
+                            "context": json.dumps(
+                                {
+                                    "worksheet": worksheet,
+                                    "attempt": attempt + 1,
+                                    "wait_seconds": wait_seconds,
+                                    "wait_milliseconds": wait_milliseconds,
+                                }
+                            )
+                        },
+                    )
+                    time.sleep(wait_seconds)
+                    continue
+                logging.exception(
+                    "Не удалось получить лист Google Sheets",
+                    extra={"context": json.dumps({"worksheet": worksheet})},
+                )
+                raise
+        raise RuntimeError("Не удалось получить лист Google Sheets после повторных попыток")
+
+    def _should_retry_sheets_error(self, error: Exception) -> bool:
+        if isinstance(error, APIError):
+            response = getattr(error, "response", None)
+            status_code = None
+            if response is not None:
+                status_code = getattr(response, "status_code", None) or getattr(
+                    response, "status", None
+                )
+            if status_code == 503:
+                return True
+            message = str(error)
+            if "503" in message or "UNAVAILABLE" in message.upper():
+                return True
+        message = str(error)
+        if "UNAVAILABLE" in message.upper() or "503" in message:
+            return True
+        return False
+
+    def _compute_sheets_wait(self, attempt: int) -> float:
+        exponent = max(attempt - 1, 0)
+        return self._SHEETS_INITIAL_WAIT_SECONDS * (
+            self._SHEETS_BACKOFF_MULTIPLIER ** exponent
+        )
 
     def _merge_existing(
         self,
