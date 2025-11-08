@@ -38,6 +38,7 @@ export PYTHONPATH=src
 - `ID_GOOGLE_TABLE_PUBLIC_DANNYE` — идентификатор публичной Google-таблицы для публикации листа `Data_Po_kagdomy_posty`.
 - `URL_GAS_RAZVERTIVANIA` — URL развёрнутого Google Apps Script.
 - `GOOGLE_SERVICE_ACCOUNT_JSON` — JSON-ключ сервисного аккаунта Google.
+- `GOOGLE_MAX_STRING_PARSING` — максимальное число строк для копирования в публичную таблицу (0 — без ограничений).
 - `THREADS_API_BASE_URL` — базовый URL Threads Graph API (по умолчанию `https://graph.threads.net`, запросы выполняются к версии API `v1.0`).
 - `THREADS_REQUEST_TIMEOUT` — таймаут HTTP-запросов в секундах.
 - `THREADS_CONCURRENCY` — максимальное число параллельных запросов.
@@ -91,6 +92,7 @@ python -m threads_metrics.main run
 
 - Команда `python -m threads_metrics.sync_sheets` переносит лист `Data_Po_kagdomy_posty` из таблицы `ID_GOOGLE_TABLE` в таблицу `ID_GOOGLE_TABLE_PUBLIC_DANNYE`.
 - Перед записью целевой лист полностью очищается, после чего переносится прямоугольный диапазон значений и устанавливается высота строк 21 пиксель для сохранения компактного вида.
+- При необходимости можно ограничить количество копируемых строк, задав переменную `GOOGLE_MAX_STRING_PARSING`; значение `0` отключает ограничение.
 - По умолчанию используется лист `Data_Po_kagdomy_posty`; чтобы выбрать другой лист, задайте переменную окружения `SOURCE_WORKSHEET_NAME`.
 
 ## Запуск

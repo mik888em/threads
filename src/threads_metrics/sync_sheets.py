@@ -76,13 +76,31 @@ def _set_row_height(worksheet: gspread.Worksheet, rows_count: int) -> None:
     )
 
 
+def _parse_max_rows(value: str | None) -> int | None:
+    """Преобразует ограничение количества строк из переменной окружения."""
+
+    if value is None or value.strip() == "":
+        return None
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        logging.error("Некорректное значение GOOGLE_MAX_STRING_PARSING: %s", value)
+        raise SystemExit(1) from error
+    if parsed <= 0:
+        return None
+    return parsed
+
+
 def _copy_values(
     source_sheet: gspread.Worksheet,
     target_sheet: gspread.Worksheet,
+    max_rows: int | None = None,
 ) -> None:
     """Копирует значения с листа источника на целевой лист."""
 
     rows = source_sheet.get_all_values()
+    if max_rows is not None:
+        rows = rows[:max_rows]
     padded_rows = _pad_rows(rows)
     target_sheet.clear()
     if padded_rows:
@@ -103,6 +121,8 @@ def main() -> None:
     target_table_id = _get_env("ID_GOOGLE_TABLE_PUBLIC_DANNYE")
     worksheet_name = os.getenv("SOURCE_WORKSHEET_NAME", DEFAULT_WORKSHEET_NAME)
 
+    max_rows = _parse_max_rows(os.getenv("GOOGLE_MAX_STRING_PARSING"))
+
     client = _authorize(service_account_json)
     source_table = client.open_by_key(source_table_id)
     target_table = client.open_by_key(target_table_id)
@@ -113,7 +133,9 @@ def main() -> None:
     logging.info(
         "Копирование данных листа %s из таблицы %s в таблицу %s", worksheet_name, source_table_id, target_table_id
     )
-    _copy_values(source_sheet, target_sheet)
+    if max_rows is not None:
+        logging.info("Будет скопировано не более %s строк", max_rows)
+    _copy_values(source_sheet, target_sheet, max_rows=max_rows)
     logging.info("Копирование завершено")
 
 
