@@ -25,5 +25,6 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           ID_GOOGLE_TABLE: ${{ secrets.ID_GOOGLE_TABLE }}
           ID_GOOGLE_TABLE_PUBLIC_DANNYE: ${{ secrets.ID_GOOGLE_TABLE_PUBLIC_DANNYE }}
+          GOOGLE_MAX_STRING_PARSING: ${{ secrets.GOOGLE_MAX_STRING_PARSING }}
           SOURCE_WORKSHEET_NAME: Data_Po_kagdomy_posty
         run: python -m src.threads_metrics.sync_sheets

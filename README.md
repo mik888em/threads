@@ -38,7 +38,7 @@ export PYTHONPATH=src
 - `ID_GOOGLE_TABLE_PUBLIC_DANNYE` — идентификатор публичной Google-таблицы для публикации листа `Data_Po_kagdomy_posty`.
 - `URL_GAS_RAZVERTIVANIA` — URL развёрнутого Google Apps Script.
 - `GOOGLE_SERVICE_ACCOUNT_JSON` — JSON-ключ сервисного аккаунта Google.
-- `GOOGLE_MAX_STRING_PARSING` — максимальное число строк для копирования в публичную таблицу (0 — без ограничений).
+- `GOOGLE_MAX_STRING_PARSING` — максимальное число строк для копирования в публичную таблицу (0 — без ограничений, значение для workflow берётся из одноимённого секрета).
 - `THREADS_API_BASE_URL` — базовый URL Threads Graph API (по умолчанию `https://graph.threads.net`, запросы выполняются к версии API `v1.0`).
 - `THREADS_REQUEST_TIMEOUT` — таймаут HTTP-запросов в секундах.
 - `THREADS_CONCURRENCY` — максимальное число параллельных запросов.
@@ -118,7 +118,7 @@ python -m threads_metrics.main run
 ### Интеграция с GitHub Actions
 
 - Расписание (`*/60 * * * *`) запускает сбор каждые 60 минут, при этом блок `concurrency` гарантирует, что одновременно выполняется только один экземпляр workflow — новое срабатывание дождётся завершения предыдущего.
-- Workflow `sheets-sync.yml` каждые 15 минут синхронизирует лист `Data_Po_kagdomy_posty` между таблицами `ID_GOOGLE_TABLE` и `ID_GOOGLE_TABLE_PUBLIC_DANNYE`, используя тот же сервисный аккаунт.
+- Workflow `sheets-sync.yml` каждые 15 минут синхронизирует лист `Data_Po_kagdomy_posty` между таблицами `ID_GOOGLE_TABLE` и `ID_GOOGLE_TABLE_PUBLIC_DANNYE`, используя тот же сервисный аккаунт и опциональный лимит строк из `GOOGLE_MAX_STRING_PARSING`.
 - Джобу ограничивает внешний таймаут в 100 минут, а сам сервис завершится раньше (по умолчанию через 100 минут ожидания, значение настраивается через `THREADS_RUN_TIMEOUT_MIN`), если зависнет или получит сигнал остановки.
 - Для локального запуска используется та же команда `python -m threads_metrics.main run`, поэтому отладка и CI ведут себя одинаково.
 
