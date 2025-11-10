@@ -12,6 +12,7 @@ from google.oauth2.service_account import Credentials
 
 DEFAULT_WORKSHEET_NAME = "Data_Po_kagdomy_posty"
 ROW_HEIGHT_PIXELS = 21
+COLUMN_B_INDEX = 1
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -76,6 +77,41 @@ def _set_row_height(worksheet: gspread.Worksheet, rows_count: int) -> None:
     )
 
 
+def _set_column_text_format(
+    worksheet: gspread.Worksheet,
+    rows_count: int,
+    column_index: int = COLUMN_B_INDEX,
+) -> None:
+    """Принудительно задаёт текстовый формат столбца, чтобы сохранить длинные значения."""
+
+    if rows_count <= 0:
+        return
+    sheet_id = worksheet.id
+    worksheet.spreadsheet.batch_update(
+        {
+            "requests": [
+                {
+                    "repeatCell": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "startRowIndex": 0,
+                            "endRowIndex": rows_count,
+                            "startColumnIndex": column_index,
+                            "endColumnIndex": column_index + 1,
+                        },
+                        "cell": {
+                            "userEnteredFormat": {
+                                "numberFormat": {"type": "TEXT"}
+                            }
+                        },
+                        "fields": "userEnteredFormat.numberFormat",
+                    }
+                }
+            ]
+        }
+    )
+
+
 def _parse_max_rows(value: str | None) -> int | None:
     """Преобразует ограничение количества строк из переменной окружения."""
 
@@ -104,9 +140,13 @@ def _copy_values(
     padded_rows = _pad_rows(rows)
     target_sheet.clear()
     if padded_rows:
-        target_sheet.resize(rows=len(padded_rows), cols=len(padded_rows[0]))
+        rows_count = len(padded_rows)
+        cols_count = len(padded_rows[0])
+        target_sheet.resize(rows=rows_count, cols=cols_count)
+        if cols_count > COLUMN_B_INDEX:
+            _set_column_text_format(target_sheet, rows_count, column_index=COLUMN_B_INDEX)
         target_sheet.update("A1", padded_rows, value_input_option="USER_ENTERED")
-        _set_row_height(target_sheet, len(padded_rows))
+        _set_row_height(target_sheet, rows_count)
     else:
         target_sheet.resize(rows=1, cols=1)
         _set_row_height(target_sheet, 1)

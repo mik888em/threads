@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import List
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -73,24 +73,49 @@ def test_copy_values_respects_limit() -> None:
     assert target.resize_calls == [(2, 2)]
     assert target.update_calls == [("A1", [["A1", "B1"], ["A2", "B2"]], "USER_ENTERED")]
 
-    target.spreadsheet.batch_update.assert_called_once_with(
-        {
-            "requests": [
-                {
-                    "updateDimensionProperties": {
-                        "range": {
-                            "sheetId": target.id,
-                            "dimension": "ROWS",
-                            "startIndex": 0,
-                            "endIndex": 2,
-                        },
-                        "properties": {"pixelSize": ROW_HEIGHT_PIXELS},
-                        "fields": "pixelSize",
+    assert target.spreadsheet.batch_update.call_args_list == [
+        call(
+            {
+                "requests": [
+                    {
+                        "repeatCell": {
+                            "range": {
+                                "sheetId": target.id,
+                                "startRowIndex": 0,
+                                "endRowIndex": 2,
+                                "startColumnIndex": 1,
+                                "endColumnIndex": 2,
+                            },
+                            "cell": {
+                                "userEnteredFormat": {
+                                    "numberFormat": {"type": "TEXT"}
+                                }
+                            },
+                            "fields": "userEnteredFormat.numberFormat",
+                        }
                     }
-                }
-            ]
-        }
-    )
+                ]
+            }
+        ),
+        call(
+            {
+                "requests": [
+                    {
+                        "updateDimensionProperties": {
+                            "range": {
+                                "sheetId": target.id,
+                                "dimension": "ROWS",
+                                "startIndex": 0,
+                                "endIndex": 2,
+                            },
+                            "properties": {"pixelSize": ROW_HEIGHT_PIXELS},
+                            "fields": "pixelSize",
+                        }
+                    }
+                ]
+            }
+        ),
+    ]
 
 
 def test_copy_values_without_limit_keeps_all_rows() -> None:
