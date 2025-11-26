@@ -5,6 +5,9 @@ on:
     - cron: '0 */2 * * *'
   workflow_dispatch:
 
+env:
+  STOP_ALL_WORKFLOW: ${{ secrets.STOP_ALL_WORKFLOW }}
+
 concurrency:
   group: threads-metrics
   cancel-in-progress: true
@@ -14,7 +17,15 @@ permissions:
   contents: read
 
 jobs:
+  stop-all:
+    if: env.STOP_ALL_WORKFLOW == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Остановить workflow
+        run: echo "STOP_ALL_WORKFLOW=true — выполняем мгновенную остановку воркфлоу."
+
   guard:
+    if: env.STOP_ALL_WORKFLOW != 'true'
     runs-on: ubuntu-latest
     outputs:
       should_continue: ${{ steps.check.outputs.should_continue }}
@@ -52,8 +63,8 @@ jobs:
             }
 
   run-metrics:
+    if: env.STOP_ALL_WORKFLOW != 'true' && needs.guard.outputs.should_continue == 'true'
     needs: guard
-    if: needs.guard.outputs.should_continue == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:

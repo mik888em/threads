@@ -5,12 +5,23 @@ on:
   schedule:
     - cron: "*/15 * * * *"
 
+env:
+  STOP_ALL_WORKFLOW: ${{ secrets.STOP_ALL_WORKFLOW }}
+
 concurrency:
   group: cancel-pending
   cancel-in-progress: true
 
 jobs:
+  stop-all:
+    if: env.STOP_ALL_WORKFLOW == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Остановить workflow
+        run: echo "STOP_ALL_WORKFLOW=true — выполняем мгновенную остановку воркфлоу."
+
   guard:
+    if: env.STOP_ALL_WORKFLOW != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
