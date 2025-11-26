@@ -2,12 +2,21 @@ name: Sync Google Sheets
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/30 * * * *"
   workflow_dispatch:
+
+env:
+  STOP_ALL_WORKFLOW: ${{ secrets.STOP_ALL_WORKFLOW }}
+
+concurrency:
+  group: sync-google-sheets
+  cancel-in-progress: true
 
 jobs:
   sync:
+    if: env.STOP_ALL_WORKFLOW != 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4

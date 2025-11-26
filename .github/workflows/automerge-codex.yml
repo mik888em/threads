@@ -4,6 +4,9 @@ on:
   pull_request_target:
     types: [opened, reopened, synchronize, labeled]
 
+env:
+  STOP_ALL_WORKFLOW: ${{ secrets.STOP_ALL_WORKFLOW }}
+
 permissions:
   contents: write
   pull-requests: write
@@ -12,7 +15,7 @@ permissions:
 jobs:
   label-and-merge:
     # Автоматически ставим метку, если ветка начинается с "codex/"
-    if: startsWith(github.event.pull_request.head.ref, 'codex/')
+    if: env.STOP_ALL_WORKFLOW != 'true' && startsWith(github.event.pull_request.head.ref, 'codex/')
     runs-on: ubuntu-latest
     steps:
       - name: Add "automerge" label for codex branches
