@@ -2,11 +2,12 @@ name: Threads Metrics
 
 on:
   schedule:
-    - cron: '*/60 * * * *'
+    - cron: '0 */2 * * *'
   workflow_dispatch:
 
 concurrency:
   group: threads-metrics
+  cancel-in-progress: true
 
 permissions:
   actions: write
@@ -54,7 +55,7 @@ jobs:
     needs: guard
     if: needs.guard.outputs.should_continue == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 100
+    timeout-minutes: 60
     env:
       ID_GOOGLE_TABLE: ${{ secrets.ID_GOOGLE_TABLE }}
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}

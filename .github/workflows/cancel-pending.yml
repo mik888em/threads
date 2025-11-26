@@ -3,16 +3,16 @@ name: Cancel queued Threads Metrics runs
 on:
   workflow_dispatch:
   schedule:
-    - cron: "* * * * *"
+    - cron: "*/15 * * * *"
 
 concurrency:
   group: cancel-pending
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   guard:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,4 +27,4 @@ jobs:
           export PYTHONPATH=src
           export GITHUB_OWNER="${GITHUB_REPOSITORY%%/*}"
           export GITHUB_REPO="${GITHUB_REPOSITORY##*/}"
-          python -m threads_metrics.main cancel-pending --interval 30
+          python -m threads_metrics.main cancel-pending --interval 120
