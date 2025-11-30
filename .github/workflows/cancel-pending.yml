@@ -2,8 +2,8 @@ name: Cancel queued Threads Metrics runs
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "*/15 * * * *"
+ # schedule:
+ #   - cron: "*/15 * * * *"
 
 env:
   STOP_ALL_WORKFLOW: ${{ secrets.STOP_ALL_WORKFLOW }}
